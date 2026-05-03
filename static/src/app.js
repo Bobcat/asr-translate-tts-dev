@@ -3,6 +3,8 @@ import { AudioCapture } from './shared/audio-capture.js';
 import { AudioQueue } from './shared/audio-playback.js';
 import { languages } from './shared/languages.js';
 
+const LANE_IDS = ['a_to_b', 'b_to_a'];
+
 const els = {
   listenButton: document.querySelector('#listenButton'),
   miniStatus: document.querySelector('#miniStatus'),
@@ -17,9 +19,8 @@ const els = {
   sourcePreview: document.querySelector('#sourcePreview'),
   targetText: document.querySelector('#targetText'),
   targetPreview: document.querySelector('#targetPreview'),
-  meaningCheck: document.querySelector('#meaningCheck'),
-  meaningText: document.querySelector('#meaningText'),
   speakNowButton: document.querySelector('#speakNowButton'),
+  resetTurnButton: document.querySelector('#resetTurnButton'),
   swapButton: document.querySelector('#swapButton'),
   audioResumeButton: document.querySelector('#audioResumeButton'),
   ttsAudio: document.querySelector('#ttsAudio'),
@@ -37,23 +38,22 @@ const els = {
   micLevel: document.querySelector('.mic-level'),
   micLevelFill: document.querySelector('#micLevelFill'),
   audioSettingsReset: document.querySelector('#audioSettingsReset'),
+  ttsOutputState: document.querySelector('#ttsOutputState'),
 };
 
 const state = {
   socket: null,
   capture: null,
-  config: null,
   listening: false,
   finalizing: false,
-  sourceLanguage: 'Dutch',
-  targetLanguage: 'English',
-  languageSheetRole: null,
-  sourceCommitted: '',
-  sourcePreview: '',
-  targetCommitted: '',
-  targetPreview: '',
+  sideALanguage: 'Dutch',
+  sideBLanguage: 'English',
+  activeLaneId: 'a_to_b',
+  requestedStartLaneId: 'a_to_b',
+  lanes: buildLocalLanes('Dutch', 'English'),
   audioStatus: '',
   status: 'idle',
+  captureMutedForPlayback: false,
   audioSettings: {
     preGain: 1,
     autoGainControl: false,
@@ -76,7 +76,22 @@ audioQueue = new AudioQueue({
     } else if (!state.finalizing && state.status === 'speaking') {
       renderStatus('idle');
     }
-    updateSpeakNowButton();
+    updateActionButtons();
+  },
+  onPlaybackStart: () => {
+    state.captureMutedForPlayback = true;
+    renderStatus('speaking');
+  },
+  onPlaybackIdle: () => {
+    state.captureMutedForPlayback = false;
+    renderStatus(state.listening ? 'listening' : state.status);
+  },
+  onItemEnded: (item) => {
+    state.socket?.ttsPlaybackComplete({
+      laneId: item.laneId,
+      turnId: item.turnId,
+      artifactId: item.artifactId,
+    });
   },
 });
 
@@ -85,9 +100,11 @@ init().catch((error) => {
 });
 
 async function init() {
-  state.config = await api.getConfig();
-  setLanguage('source', state.config.translation?.source_language || 'Dutch', { updateMeta: true });
-  setLanguage('target', state.config.translation?.target_language || 'English', { updateMeta: true });
+  const config = await api.getConfig();
+  state.sideALanguage = normalizeLanguageName(config.conversation?.side_a_language || 'Dutch');
+  state.sideBLanguage = normalizeLanguageName(config.conversation?.side_b_language || 'English');
+  state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
+  renderTtsOutputState(config.tts);
 
   els.listenButton.addEventListener('click', () => {
     if (state.listening || state.finalizing) {
@@ -98,10 +115,9 @@ async function init() {
   });
   els.sourceLanguageChip.addEventListener('click', () => openLanguageSheet('source'));
   els.targetLanguageChip.addEventListener('click', () => openLanguageSheet('target'));
-  els.swapButton.addEventListener('click', () => {
-    swapDirection();
-  });
+  els.swapButton.addEventListener('click', swapDirection);
   els.speakNowButton.addEventListener('click', speakNow);
+  els.resetTurnButton.addEventListener('click', resetTurn);
   els.settingsButton.addEventListener('click', openSettingsSheet);
   els.micPreGain.addEventListener('input', handlePreGainInput);
   els.micAutoGainControl.addEventListener('change', handleAutoGainControlChange);
@@ -117,19 +133,21 @@ async function init() {
   });
 
   renderLanguageChips();
+  renderTranscript();
   renderAudioSettings();
-  updateSpeakNowButton();
+  updateActionButtons();
   setStatus('idle', '');
 }
 
 async function startListening({ statusDetail = 'Verbinding openen' } = {}) {
-  clearTranscript();
+  clearAllLanes();
+  state.requestedStartLaneId = state.activeLaneId;
   setListenBusy(true);
   setStatus('connecting', statusDetail);
   try {
     const session = await api.createSession({
-      sourceLanguage: state.sourceLanguage,
-      targetLanguage: state.targetLanguage,
+      sideALanguage: state.sideALanguage,
+      sideBLanguage: state.sideBLanguage,
     });
     const socket = new SessionSocket(
       session.ws_url,
@@ -138,6 +156,7 @@ async function startListening({ statusDetail = 'Verbinding openen' } = {}) {
         if (state.socket !== socket) return;
         if (state.finalizing) return;
         state.listening = false;
+        state.captureMutedForPlayback = false;
         renderAudioSettings();
         updateListenButton();
         setStatus('idle', '');
@@ -153,7 +172,9 @@ async function startListening({ statusDetail = 'Verbinding openen' } = {}) {
       chunkMs: 40,
       preGain: state.audioSettings.preGain,
       autoGainControl: state.audioSettings.autoGainControl,
-      onChunk: (buffer) => state.socket?.sendAudio(buffer),
+      onChunk: (buffer) => {
+        if (!state.captureMutedForPlayback) state.socket?.sendAudio(buffer);
+      },
       onLevel: (level) => renderMicLevel(level),
     });
     await state.capture.start();
@@ -162,6 +183,7 @@ async function startListening({ statusDetail = 'Verbinding openen' } = {}) {
   } catch (error) {
     state.listening = false;
     state.finalizing = false;
+    state.captureMutedForPlayback = false;
     cleanupClientSession();
     setStatus('error', error.message || String(error));
   } finally {
@@ -177,6 +199,7 @@ function pauseListening() {
   }
   state.finalizing = true;
   state.listening = false;
+  state.captureMutedForPlayback = false;
   state.capture?.stop();
   state.capture = null;
   renderMicLevel(0);
@@ -191,32 +214,48 @@ function speakNow() {
     audioQueue.playOrResume();
     return;
   }
-  if (state.sourcePreview && state.socket?.speakNow()) {
-    els.miniStatus.textContent = 'Vertalen';
-    return;
+  if (activeTargetText() && state.socket?.speakNow()) {
+    els.miniStatus.textContent = 'Audio maken';
+  }
+}
+
+function resetTurn() {
+  if (state.finalizing) return;
+  if (state.socket?.resetTurn()) {
+    els.miniStatus.textContent = 'Turn wissen';
   }
 }
 
 function swapDirection() {
-  applyLanguageChange(() => {
-    const previousSource = state.sourceLanguage;
-    setLanguage('source', state.targetLanguage);
-    setLanguage('target', previousSource);
-  }, 'Richting wisselen');
-  els.miniStatus.textContent = `${codeForLanguage(state.sourceLanguage)} -> ${codeForLanguage(state.targetLanguage)}`;
+  const nextLaneId = state.activeLaneId === 'a_to_b' ? 'b_to_a' : 'a_to_b';
+  if (state.finalizing) {
+    els.miniStatus.textContent = 'Wacht tot afronden klaar is';
+    return;
+  }
+  if (state.socket?.isOpen()) {
+    state.socket.setActiveLane(nextLaneId);
+    els.miniStatus.textContent = 'Richting wisselen';
+    return;
+  }
+  state.activeLaneId = nextLaneId;
+  renderLanguageChips();
+  renderTranscript();
+  updateActionButtons();
+  els.miniStatus.textContent = directionLabel();
 }
 
 function handleMessage(msg) {
   if (msg.type === 'ready') {
-    if (msg.source_language) setLanguage('source', msg.source_language, { updateMeta: true });
-    if (msg.target_language) setLanguage('target', msg.target_language, { updateMeta: true });
-    els.miniStatus.textContent = `${codeForLanguage(state.sourceLanguage)} -> ${codeForLanguage(state.targetLanguage)}`;
+    applyReady(msg);
     return;
   }
-  if (msg.type === 'direction_changed') {
-    if (msg.source_language) setLanguage('source', msg.source_language, { updateMeta: true });
-    if (msg.target_language) setLanguage('target', msg.target_language, { updateMeta: true });
-    els.miniStatus.textContent = `${codeForLanguage(state.sourceLanguage)} -> ${codeForLanguage(state.targetLanguage)}`;
+  if (msg.type === 'active_lane_changed') {
+    state.activeLaneId = msg.active_lane_id || state.activeLaneId;
+    if (msg.lane) mergeLanePayload(msg.lane.lane_id || state.activeLaneId, msg.lane);
+    renderLanguageChips();
+    renderTranscript();
+    updateActionButtons();
+    els.miniStatus.textContent = directionLabel();
     return;
   }
   if (msg.type === 'state') {
@@ -224,45 +263,56 @@ function handleMessage(msg) {
     return;
   }
   if (msg.type === 'source_update') {
-    state.sourceCommitted = applyCommittedDelta(state.sourceCommitted, msg);
-    state.sourcePreview = msg.preview || '';
-    els.sourceText.textContent = state.sourceCommitted;
-    els.sourcePreview.textContent = state.sourcePreview;
-    els.sourcePaneMeta.textContent = codeForLanguage(state.sourceLanguage);
-    if (msg.committed_append) {
-      els.miniStatus.textContent = 'Vertalen';
+    const lane = laneForMessage(msg);
+    if (msg.reset) {
+      lane.sourceCommitted = '';
+    } else {
+      lane.sourceCommitted = applyCommittedDelta(lane.sourceCommitted, msg);
     }
-    scrollToBottom(els.sourceText);
-    updateSpeakNowButton();
+    lane.sourcePreview = msg.preview || '';
+    if (lane.laneId === state.activeLaneId) renderTranscript();
+    if (msg.committed_append) els.miniStatus.textContent = 'Vertalen';
+    updateActionButtons();
     return;
   }
   if (msg.type === 'target_update') {
-    state.targetCommitted = applyCommittedDelta(state.targetCommitted, msg);
-    state.targetPreview = msg.preview || '';
-    els.targetText.textContent = state.targetCommitted;
-    els.targetPreview.textContent = state.targetPreview;
-    els.targetPaneMeta.textContent = codeForLanguage(state.targetLanguage);
+    const lane = laneForMessage(msg);
+    if (msg.reset) {
+      lane.targetCommitted = '';
+    } else {
+      lane.targetCommitted = applyCommittedDelta(lane.targetCommitted, msg);
+    }
+    lane.targetPreview = msg.preview || '';
+    if (lane.laneId === state.activeLaneId) renderTranscript();
+    if (msg.committed_append) els.miniStatus.textContent = 'Vertaling klaar';
+    updateActionButtons();
+    return;
+  }
+  if (msg.type === 'tts_clip_ready') {
     if (msg.tts) {
-      audioQueue.enqueue(msg.tts);
-    } else if (msg.committed_append) {
-      els.miniStatus.textContent = 'Vertaling klaar';
+      audioQueue.enqueue({
+        ...msg.tts,
+        laneId: msg.lane_id,
+        turnId: msg.turn_id,
+        artifactId: msg.tts.artifact_id,
+      });
+      els.miniStatus.textContent = 'Audio klaar';
     }
-    if (msg.tts_error) {
-      els.miniStatus.textContent = msg.tts_error;
-    }
-    scrollToBottom(els.targetText);
-    updateSpeakNowButton();
+    updateActionButtons();
+    return;
+  }
+  if (msg.type === 'tts_status') {
+    els.miniStatus.textContent = msg.message || msg.reason || '';
+    updateActionButtons();
+    return;
+  }
+  if (msg.type === 'turn_reset_ack' || msg.type === 'turn_kept') {
+    const lane = ensureLane(msg.lane_id);
+    if (lane.laneId === state.activeLaneId) renderTranscript();
+    updateActionButtons();
     return;
   }
   if (msg.type === 'asr_status') {
-    if (msg.state === 'manual_commit') {
-      els.miniStatus.textContent = 'Vertalen';
-      return;
-    }
-    if (msg.state === 'manual_commit_skipped') {
-      els.miniStatus.textContent = 'Nog geen tekst';
-      return;
-    }
     if (!els.miniStatus.textContent) {
       els.miniStatus.textContent = 'Spraak verwerken';
     }
@@ -275,10 +325,28 @@ function handleMessage(msg) {
   if (msg.type === 'ended') {
     state.finalizing = false;
     state.listening = false;
+    state.captureMutedForPlayback = false;
     cleanupClientSession({ keepSocket: false });
     setStatus('idle', audioQueue.statusText());
     updateListenButton();
-    updateSpeakNowButton();
+    updateActionButtons();
+  }
+}
+
+function applyReady(msg) {
+  state.sideALanguage = normalizeLanguageName(msg.side_a_language || state.sideALanguage);
+  state.sideBLanguage = normalizeLanguageName(msg.side_b_language || state.sideBLanguage);
+  state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
+  for (const laneId of Object.keys(msg.lanes || {})) {
+    mergeLanePayload(laneId, msg.lanes[laneId]);
+  }
+  state.activeLaneId = msg.active_lane_id || state.activeLaneId;
+  renderLanguageChips();
+  renderTranscript();
+  updateActionButtons();
+  els.miniStatus.textContent = directionLabel();
+  if (state.requestedStartLaneId !== state.activeLaneId) {
+    state.socket?.setActiveLane(state.requestedStartLaneId);
   }
 }
 
@@ -294,6 +362,7 @@ function applyCommittedDelta(current, msg) {
 function cleanupClientSession({ keepSocket = false } = {}) {
   state.capture?.stop();
   state.capture = null;
+  state.captureMutedForPlayback = false;
   renderMicLevel(0);
   renderAudioSettings();
   if (!keepSocket) {
@@ -302,21 +371,12 @@ function cleanupClientSession({ keepSocket = false } = {}) {
   }
 }
 
-function clearTranscript() {
-  state.sourceCommitted = '';
-  state.sourcePreview = '';
-  state.targetCommitted = '';
-  state.targetPreview = '';
-  els.sourceText.textContent = '';
-  els.sourcePreview.textContent = '';
-  els.targetText.textContent = '';
-  els.targetPreview.textContent = '';
-  els.meaningText.textContent = '';
-  els.meaningCheck.hidden = true;
+function clearAllLanes() {
+  state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
   els.miniStatus.textContent = '';
   audioQueue.clear();
-  updatePanelMetaForEmptyPanes();
-  updateSpeakNowButton();
+  renderTranscript();
+  updateActionButtons();
 }
 
 function setListenBusy(busy) {
@@ -327,10 +387,16 @@ function updateListenButton() {
   renderStatus(state.finalizing ? 'finalizing' : state.listening ? 'listening' : state.status);
 }
 
+function updateActionButtons() {
+  updateSpeakNowButton();
+  updateResetTurnButton();
+  renderLanguageChips();
+}
+
 function updateSpeakNowButton() {
-  const canCommitPreview = Boolean(state.sourcePreview && state.socket?.isOpen());
-  const canPlayAudio = Boolean(audioQueue?.hasAudio());
-  els.speakNowButton.disabled = !(canCommitPreview || canPlayAudio) || state.finalizing;
+  const canSpeakTarget = Boolean(activeTargetText() && state.socket?.isOpen());
+  const canPlayAudio = Boolean(audioQueue?.hasAudio() && state.socket?.isOpen());
+  els.speakNowButton.disabled = !(canSpeakTarget || canPlayAudio) || state.finalizing;
   els.speakNowButton.classList.toggle('is-busy', state.finalizing);
   if (state.finalizing) {
     els.speakNowButton.textContent = 'Afronden...';
@@ -338,20 +404,21 @@ function updateSpeakNowButton() {
     els.speakNowButton.textContent = 'Speelt...';
   } else if (canPlayAudio) {
     els.speakNowButton.textContent = 'Speel audio';
-  } else if (canCommitPreview) {
-    els.speakNowButton.textContent = 'Vertaal nu';
-  } else if (state.listening) {
-    els.speakNowButton.textContent = 'Wacht op tekst';
   } else {
-    els.speakNowButton.textContent = 'Vertaal nu';
+    els.speakNowButton.textContent = 'Spreek nu';
   }
+}
+
+function updateResetTurnButton() {
+  const hasText = Boolean(activeSourceText() || activeTargetText());
+  els.resetTurnButton.disabled = state.finalizing || !hasText || !state.socket?.isOpen();
 }
 
 function setStatus(status, detail) {
   state.status = String(status || 'idle').toLowerCase();
   renderStatus(state.status);
   els.miniStatus.textContent = detail || '';
-  updateSpeakNowButton();
+  updateActionButtons();
 }
 
 function renderStatus(status) {
@@ -375,7 +442,10 @@ function statusLabel(status) {
 }
 
 function openLanguageSheet(role) {
-  state.languageSheetRole = role;
+  if (state.listening || state.finalizing) {
+    els.miniStatus.textContent = 'Talen staan vast tijdens live';
+    return;
+  }
   els.languageSheetTitle.textContent = role === 'source' ? 'Kies brontaal' : 'Kies doeltaal';
   renderLanguageOptions(role);
   els.languageSheet.hidden = false;
@@ -383,11 +453,11 @@ function openLanguageSheet(role) {
 
 function closeLanguageSheet() {
   els.languageSheet.hidden = true;
-  state.languageSheetRole = null;
 }
 
 function renderLanguageOptions(role) {
-  const current = role === 'source' ? state.sourceLanguage : state.targetLanguage;
+  const lane = activeLane();
+  const current = role === 'source' ? lane.sourceLanguage : lane.targetLanguage;
   const recent = uniqueLanguages([current, 'English', 'Dutch', 'German']);
   const recentGroup = createLanguageGroup('Recent', recent, current, role);
   const allGroup = createLanguageGroup('Alle talen', languages.map((item) => item.name), current, role);
@@ -410,9 +480,7 @@ function createLanguageGroup(title, names, current, role) {
     button.addEventListener('click', () => {
       closeLanguageSheet();
       if (name === current) return;
-      applyLanguageChange(() => {
-        setLanguage(role, name);
-      }, 'Taal wisselen');
+      setVisibleLanguage(role, name);
     });
 
     const label = document.createElement('span');
@@ -436,21 +504,21 @@ function closeSettingsSheet() {
   els.settingsSheet.hidden = true;
 }
 
-function applyLanguageChange(applyChange, liveStatusText) {
-  if (state.finalizing) {
-    els.miniStatus.textContent = 'Wacht tot afronden klaar is';
-    return;
+function setVisibleLanguage(role, value) {
+  const next = normalizeLanguageName(value);
+  if (state.activeLaneId === 'a_to_b') {
+    if (role === 'source') state.sideALanguage = next;
+    else state.sideBLanguage = next;
+  } else if (role === 'source') {
+    state.sideBLanguage = next;
+  } else {
+    state.sideALanguage = next;
   }
-  applyChange();
-  clearTranscript();
-  if (state.socket?.setDirection({
-    sourceLanguage: state.sourceLanguage,
-    targetLanguage: state.targetLanguage,
-  })) {
-    els.miniStatus.textContent = liveStatusText;
-    return;
-  }
-  updatePanelMetaForEmptyPanes();
+  state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
+  renderLanguageChips();
+  renderTranscript();
+  updateActionButtons();
+  els.miniStatus.textContent = directionLabel();
 }
 
 function handlePreGainInput() {
@@ -487,6 +555,15 @@ function renderAudioSettings() {
   renderMicLevel(state.audioSettings.inputLevel);
 }
 
+function renderTtsOutputState(tts) {
+  if (!tts?.enabled) {
+    els.ttsOutputState.textContent = 'uit';
+    return;
+  }
+  const backend = String(tts.backend || '').trim();
+  els.ttsOutputState.textContent = backend ? `aan (${backend})` : 'aan';
+}
+
 function renderMicLevel(value) {
   const level = normalizeLevel(value);
   state.audioSettings.inputLevel = level;
@@ -494,6 +571,93 @@ function renderMicLevel(value) {
   els.micLevelFill.style.transform = `scaleX(${level.toFixed(3)})`;
   els.micLevel.setAttribute('aria-valuenow', String(percent));
   els.micLevel.classList.toggle('is-hot', level >= 0.9);
+}
+
+function renderLanguageChips() {
+  const lane = activeLane();
+  const locked = state.listening || state.finalizing;
+  els.sourceLanguageCode.textContent = codeForLanguage(lane.sourceLanguage);
+  els.targetLanguageCode.textContent = codeForLanguage(lane.targetLanguage);
+  els.sourceLanguageChip.disabled = locked;
+  els.targetLanguageChip.disabled = locked;
+  els.sourceLanguageChip.setAttribute('aria-label', `Brontaal: ${lane.sourceLanguage}`);
+  els.targetLanguageChip.setAttribute('aria-label', `Doeltaal: ${lane.targetLanguage}`);
+}
+
+function renderTranscript() {
+  const lane = activeLane();
+  els.sourceText.textContent = lane.sourceCommitted;
+  els.sourcePreview.textContent = lane.sourcePreview;
+  els.targetText.textContent = lane.targetCommitted;
+  els.targetPreview.textContent = lane.targetPreview;
+  els.sourcePaneMeta.textContent = codeForLanguage(lane.sourceLanguage);
+  els.targetPaneMeta.textContent = codeForLanguage(lane.targetLanguage);
+  scrollToBottom(els.sourceText);
+  scrollToBottom(els.targetText);
+}
+
+function buildLocalLanes(sideALanguage, sideBLanguage) {
+  return {
+    a_to_b: createLane('a_to_b', sideALanguage, sideBLanguage),
+    b_to_a: createLane('b_to_a', sideBLanguage, sideALanguage),
+  };
+}
+
+function createLane(laneId, sourceLanguage, targetLanguage) {
+  return {
+    laneId,
+    sourceLanguage,
+    targetLanguage,
+    sourceCommitted: '',
+    sourcePreview: '',
+    targetCommitted: '',
+    targetPreview: '',
+  };
+}
+
+function mergeLanePayload(laneId, payload) {
+  const lane = ensureLane(laneId);
+  lane.sourceLanguage = normalizeLanguageName(payload.source_language || lane.sourceLanguage);
+  lane.targetLanguage = normalizeLanguageName(payload.target_language || lane.targetLanguage);
+}
+
+function laneForMessage(msg) {
+  return ensureLane(msg.lane_id || state.activeLaneId);
+}
+
+function ensureLane(laneId) {
+  const safeLaneId = LANE_IDS.includes(laneId) ? laneId : state.activeLaneId;
+  if (!state.lanes[safeLaneId]) {
+    state.lanes[safeLaneId] = createLane(safeLaneId, state.sideALanguage, state.sideBLanguage);
+  }
+  return state.lanes[safeLaneId];
+}
+
+function activeLane() {
+  return ensureLane(state.activeLaneId);
+}
+
+function activeSourceText() {
+  const lane = activeLane();
+  return visibleText(lane.sourceCommitted, lane.sourcePreview);
+}
+
+function activeTargetText() {
+  const lane = activeLane();
+  return visibleText(lane.targetCommitted, lane.targetPreview);
+}
+
+function visibleText(committed, preview) {
+  const left = String(committed || '').trim();
+  const right = String(preview || '').trim();
+  if (!left) return right;
+  if (!right) return left;
+  return `${left} ${right}`;
+}
+
+function directionLabel() {
+  const lane = activeLane();
+  return `${codeForLanguage(lane.sourceLanguage)} -> ${codeForLanguage(lane.targetLanguage)}`;
 }
 
 function normalizePreGain(value) {
@@ -506,32 +670,10 @@ function normalizeLevel(value) {
   return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : 0;
 }
 
-function setLanguage(role, value, { updateMeta = false } = {}) {
+function normalizeLanguageName(value) {
   const fallback = languages[0]?.name || 'English';
-  const next = languages.some((item) => item.name === value) ? value : fallback;
-  if (role === 'source') {
-    state.sourceLanguage = next;
-  } else {
-    state.targetLanguage = next;
-  }
-  renderLanguageChips();
-  if (updateMeta) updatePanelMetaForEmptyPanes();
-}
-
-function renderLanguageChips() {
-  els.sourceLanguageCode.textContent = codeForLanguage(state.sourceLanguage);
-  els.targetLanguageCode.textContent = codeForLanguage(state.targetLanguage);
-  els.sourceLanguageChip.setAttribute('aria-label', `Brontaal: ${state.sourceLanguage}`);
-  els.targetLanguageChip.setAttribute('aria-label', `Doeltaal: ${state.targetLanguage}`);
-}
-
-function updatePanelMetaForEmptyPanes() {
-  if (!state.sourceCommitted && !state.sourcePreview) {
-    els.sourcePaneMeta.textContent = codeForLanguage(state.sourceLanguage);
-  }
-  if (!state.targetCommitted && !state.targetPreview) {
-    els.targetPaneMeta.textContent = codeForLanguage(state.targetLanguage);
-  }
+  const text = String(value || '').trim();
+  return languages.some((item) => item.name === text) ? text : fallback;
 }
 
 function codeForLanguage(name) {

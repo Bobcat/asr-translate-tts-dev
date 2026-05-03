@@ -24,13 +24,13 @@ export const api = {
     return fetchJson('/api/config');
   },
 
-  createSession({ sourceLanguage, targetLanguage }) {
+  createSession({ sideALanguage, sideBLanguage }) {
     return fetchJson('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        source_language: sourceLanguage,
-        target_language: targetLanguage,
+        side_a_language: sideALanguage,
+        side_b_language: sideBLanguage,
       }),
     });
   },
@@ -79,12 +79,25 @@ export class SessionSocket {
     return true;
   }
 
-  setDirection({ sourceLanguage, targetLanguage }) {
+  setActiveLane(laneId) {
+    if (!this.isOpen()) return false;
+    this.ws.send(JSON.stringify({ type: 'set_active_lane', lane_id: laneId }));
+    return true;
+  }
+
+  resetTurn() {
+    if (!this.isOpen()) return false;
+    this.ws.send(JSON.stringify({ type: 'reset_turn' }));
+    return true;
+  }
+
+  ttsPlaybackComplete({ laneId, turnId, artifactId }) {
     if (!this.isOpen()) return false;
     this.ws.send(JSON.stringify({
-      type: 'set_direction',
-      source_language: sourceLanguage,
-      target_language: targetLanguage,
+      type: 'tts_playback_complete',
+      lane_id: laneId,
+      turn_id: turnId,
+      artifact_id: artifactId,
     }));
     return true;
   }

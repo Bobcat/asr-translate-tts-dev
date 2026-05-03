@@ -20,8 +20,8 @@
             <span class="chip-caret" aria-hidden="true">v</span>
           </button>
         </div>
-        <button class="status-pill" id="listenButton" type="button">pauze</button>
-        <button class="settings-button" id="settingsButton" type="button" aria-label="Audio-instellingen openen">mic</button>
+        <button class="status-pill" id="listenButton" type="button">start</button>
+        <button class="settings-button" id="settingsButton" type="button" aria-label="Audio-instellingen openen">Settings</button>
       </header>
 
       <section class="text-panels" aria-live="polite">
@@ -40,19 +40,18 @@
           </div>
           <div class="text-stream" id="targetText" data-empty="Nog geen vertaling"></div>
           <div class="preview-stream" id="targetPreview"></div>
-          <section class="meaning-check" id="meaningCheck" hidden>
-            <h2>Betekeniscontrole</h2>
-            <div id="meaningText"></div>
-          </section>
         </article>
       </section>
 
       <footer class="action-dock">
         <button class="primary-action" id="speakNowButton" type="button" disabled>Spreek nu</button>
-        <button class="secondary-action" id="swapButton" type="button">
-          <span aria-hidden="true">&lt;-&gt;</span>
-          Wissel richting
-        </button>
+        <div class="secondary-actions">
+          <button class="secondary-action" id="resetTurnButton" type="button" disabled>Wis turn</button>
+          <button class="secondary-action" id="swapButton" type="button">
+            <span aria-hidden="true">&lt;-&gt;</span>
+            Wissel richting
+          </button>
+        </div>
         <div class="mini-status" id="miniStatus"></div>
       </footer>
       <button class="hidden-playback-button" id="audioResumeButton" type="button" hidden>Speel audio af</button>
@@ -77,7 +76,7 @@
             <button class="sheet-close" id="settingsSheetClose" type="button" aria-label="Sluiten">x</button>
           </header>
           <div class="settings-list">
-            <section class="setting-group audio-input-settings" aria-label="Microfoon">
+            <section class="setting-group" aria-label="Microfoon">
               <div class="setting-title-row">
                 <span>Microfoon</span>
                 <span class="setting-value" id="micPreGainValue">1.0x</span>
@@ -98,7 +97,7 @@
             </section>
             <div class="setting-row">
               <span>Audio-uitvoer</span>
-              <span>uit</span>
+              <span id="ttsOutputState">uit</span>
             </div>
           </div>
         </section>

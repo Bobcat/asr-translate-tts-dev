@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,17 +19,12 @@ class ConversationSession:
     session_id: str
     created_unix: float
     expires_unix: float
-    source_language: str
-    target_language: str
+    side_a_language: str
+    side_b_language: str
     state: str = "created"
     ws_connected: bool = False
     closed: bool = False
     close_reason: str = ""
-    source_revision: int = 0
-    target_revision: int = 0
-    source_committed_text: str = ""
-    target_committed_text: str = ""
-    artifacts: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ConversationSessionManager:
@@ -37,7 +32,7 @@ class ConversationSessionManager:
         self._sessions: dict[str, ConversationSession] = {}
         self._lock = threading.Lock()
 
-    def create_session(self, *, source_language: str, target_language: str) -> dict[str, Any]:
+    def create_session(self, *, side_a_language: str, side_b_language: str) -> dict[str, Any]:
         now = time.time()
         ttl_s = get_int("live.session_ttl_s", 900, min_value=60)
         session_id = f"conv_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{secrets.token_hex(4)}"
@@ -45,8 +40,8 @@ class ConversationSessionManager:
             session_id=session_id,
             created_unix=now,
             expires_unix=now + ttl_s,
-            source_language=str(source_language or "Dutch"),
-            target_language=str(target_language or "English"),
+            side_a_language=str(side_a_language or "Dutch"),
+            side_b_language=str(side_b_language or "English"),
         )
         with self._lock:
             self._cleanup_locked(now)
@@ -78,12 +73,6 @@ class ConversationSessionManager:
                     setattr(sess, key, value)
             return self._payload_locked(sess)
 
-    def add_artifact(self, session_id: str, artifact: dict[str, Any]) -> None:
-        with self._lock:
-            sess = self._sessions.get(session_id)
-            if sess is not None:
-                sess.artifacts.append(dict(artifact))
-
     def close(self, session_id: str, *, reason: str) -> None:
         with self._lock:
             sess = self._sessions.get(session_id)
@@ -112,11 +101,8 @@ class ConversationSessionManager:
             "close_reason": sess.close_reason,
             "created_at_utc": _utc_iso(sess.created_unix),
             "expires_at_utc": _utc_iso(sess.expires_unix),
-            "source_language": sess.source_language,
-            "target_language": sess.target_language,
-            "source_revision": int(sess.source_revision),
-            "target_revision": int(sess.target_revision),
-            "artifacts_count": len(sess.artifacts),
+            "side_a_language": sess.side_a_language,
+            "side_b_language": sess.side_b_language,
         }
 
 

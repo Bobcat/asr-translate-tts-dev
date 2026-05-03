@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.config import get_int, get_str, rooted_path
+from app.config import get_bool, get_int, get_str, rooted_path
 from app.protocol import PROTOCOL_VERSION
 from app.sessions import SESSIONS
 from app.tts_bridge import artifact_path
@@ -17,8 +17,8 @@ api_router = APIRouter(prefix="/api")
 
 
 class CreateSessionRequest(BaseModel):
-    source_language: str | None = None
-    target_language: str | None = None
+    side_a_language: str | None = None
+    side_b_language: str | None = None
 
 
 @api_router.get("/health")
@@ -35,20 +35,24 @@ async def config() -> dict[str, Any]:
             "sample_rate_hz": get_int("live.audio.sample_rate_hz", 16000),
             "channels": get_int("live.audio.channels", 1),
         },
-        "translation": {
-            "source_language": get_str("translation.source_language", "Dutch"),
-            "target_language": get_str("translation.target_language", "English"),
+        "conversation": {
+            "side_a_language": get_str("translation.source_language", "Dutch"),
+            "side_b_language": get_str("translation.target_language", "English"),
+        },
+        "tts": {
+            "enabled": get_bool("tts.enabled", False),
+            "backend": get_str("tts.backend", "dev_tone"),
         },
     }
 
 
 @api_router.post("/sessions")
 async def create_session(request: Request, payload: CreateSessionRequest) -> dict[str, Any]:
-    source_language = str(payload.source_language or get_str("translation.source_language", "Dutch"))
-    target_language = str(payload.target_language or get_str("translation.target_language", "English"))
+    side_a_language = str(payload.side_a_language or get_str("translation.source_language", "Dutch"))
+    side_b_language = str(payload.side_b_language or get_str("translation.target_language", "English"))
     session = SESSIONS.create_session(
-        source_language=source_language,
-        target_language=target_language,
+        side_a_language=side_a_language,
+        side_b_language=side_b_language,
     )
     session_id = str(session["session_id"])
     ws_path = rooted_path(f"/ws/sessions/{session_id}")

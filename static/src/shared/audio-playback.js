@@ -1,14 +1,22 @@
 export class AudioQueue {
-  constructor({ audio, resumeButton, onStatus }) {
+  constructor({ audio, resumeButton, onStatus, onPlaybackStart, onPlaybackIdle, onItemEnded }) {
     this.audio = audio;
     this.resumeButton = resumeButton;
     this.onStatus = onStatus;
+    this.onPlaybackStart = onPlaybackStart;
+    this.onPlaybackIdle = onPlaybackIdle;
+    this.onItemEnded = onItemEnded;
     this.queue = [];
     this.current = null;
     this.blocked = false;
-    this.audio.addEventListener('ended', () => this.playNext());
+    this.audio.addEventListener('ended', () => {
+      const ended = this.current;
+      if (ended) this.onItemEnded?.(ended);
+      this.playNext();
+    });
     this.audio.addEventListener('play', () => {
       this.blocked = false;
+      this.onPlaybackStart?.(this.current);
       this.render();
     });
     this.audio.addEventListener('pause', () => this.render());
@@ -20,7 +28,11 @@ export class AudioQueue {
 
   enqueue(item) {
     if (!item?.url) return;
-    this.queue.push({ url: String(item.url), durationMs: Number(item.duration_ms || 0) });
+    this.queue.push({
+      ...item,
+      url: String(item.url),
+      durationMs: Number(item.duration_ms || 0),
+    });
     if (!this.current) {
       this.playNext();
     } else {
@@ -34,6 +46,7 @@ export class AudioQueue {
     this.audio.pause();
     this.audio.removeAttribute('src');
     this.audio.load();
+    this.onPlaybackIdle?.();
     this.render();
   }
 
@@ -56,6 +69,7 @@ export class AudioQueue {
     const next = this.queue.shift();
     if (!next) {
       this.current = null;
+      this.onPlaybackIdle?.();
       this.render();
       return;
     }

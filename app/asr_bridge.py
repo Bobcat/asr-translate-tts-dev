@@ -119,6 +119,7 @@ class LiveASRPoolBridge:
     def enqueue_pcm16(
         self,
         *,
+        lane_id: str,
         chunk_index: int,
         t0_ms: int,
         t1_ms: int,
@@ -129,9 +130,10 @@ class LiveASRPoolBridge:
         idx = int(max(0, chunk_index))
         safe_t0 = int(max(0, t0_ms))
         safe_t1 = int(max(safe_t0, t1_ms))
+        safe_lane = _safe_token(lane_id)[:24]
         with self._lock:
             request_generation = self._request_generation
-        request_id = f"conv_{_safe_token(self.session_id)[:48]}_g{request_generation:03d}_{idx:06d}_{safe_t0:09d}_{safe_t1:09d}"[:160]
+        request_id = f"conv_{_safe_token(self.session_id)[:48]}_{safe_lane}_g{request_generation:03d}_{idx:06d}_{safe_t0:09d}_{safe_t1:09d}"[:160]
         wav_path = self.chunks_root / f"{request_id}.wav"
         raw = bytes(pcm16le or b"")
         if len(raw) % 2:

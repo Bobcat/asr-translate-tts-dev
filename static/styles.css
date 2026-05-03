@@ -97,6 +97,11 @@ button {
   letter-spacing: 0;
 }
 
+.language-chip:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
 .chip-caret {
   color: var(--muted);
   font-size: 0.78rem;
@@ -138,12 +143,20 @@ button {
   background: #fff1f0;
 }
 
+.settings-button {
+  min-width: 82px;
+  padding: 0 10px;
+}
+
 .settings-button,
 .sheet-close {
-  width: 42px;
   height: 38px;
   color: var(--muted);
   font-weight: 800;
+}
+
+.sheet-close {
+  width: 42px;
 }
 
 .text-panels {
@@ -190,8 +203,7 @@ button {
 }
 
 .text-stream,
-.preview-stream,
-.meaning-check div {
+.preview-stream {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -245,20 +257,6 @@ button {
   background: #eef5ff;
 }
 
-.meaning-check {
-  border-top: 1px solid var(--border);
-  padding: 10px 12px 12px;
-  background: #fbfcfe;
-}
-
-.meaning-check h2 {
-  margin: 0 0 6px;
-  color: var(--muted);
-  font-size: 0.78rem;
-  line-height: 1.2;
-  font-weight: 800;
-}
-
 .action-dock {
   display: grid;
   grid-template-rows: auto auto auto;
@@ -293,6 +291,12 @@ button {
 
 .primary-action.is-busy {
   background: var(--accent);
+}
+
+.secondary-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
 }
 
 .secondary-action {
@@ -522,34 +526,8 @@ button {
   opacity: 0.48;
 }
 
-.setting-row select {
-  max-width: 48%;
-  min-height: 34px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text);
-}
-
-.checkbox-row {
-  justify-content: flex-start;
-}
-
 .setting-group {
   display: grid;
-  gap: 8px;
-}
-
-.setting-group legend {
-  padding: 0 4px;
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 820;
-}
-
-.setting-group label {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 
@@ -576,6 +554,11 @@ button {
 
   .status-pill {
     min-width: 70px;
+    padding: 0 8px;
+  }
+
+  .settings-button {
+    min-width: 76px;
     padding: 0 8px;
   }
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import WebSocket, status
@@ -20,7 +21,7 @@ from realtime_translation_engine.types import LiveDispatchRequest
 
 from app.asr_bridge import ASRJob
 from app.asr_bridge import LiveASRPoolBridge
-from app.config import get_bool, get_float, get_int, get_str, optional_str
+from app.config import get_bool, get_float, get_int, optional_str
 from app.protocol import event
 from app.sessions import ConversationSession
 from app.sessions import SESSIONS
@@ -46,6 +47,42 @@ _ASR_LANGUAGE_CODES = {
 }
 
 
+@dataclass
+class ConversationTurn:
+    turn_id: str
+    source_committed_text: str = ""
+    source_preview_text: str = ""
+    target_committed_text: str = ""
+    target_preview_text: str = ""
+
+
+@dataclass
+class LaneASRJob:
+    job: ASRJob
+    turn_id: str
+
+
+@dataclass
+class ConversationLane:
+    lane_id: str
+    source_language: str
+    target_language: str
+    asr_language: str | None
+    asr_runner: LiveASRRunner
+    translation_runner: LiveRunner
+    translation_bridge: TranslationBridge
+    current_turn: ConversationTurn
+    source_state: SourceTranscriptState = field(default_factory=SourceTranscriptState)
+    asr_inflight: LaneASRJob | None = None
+    translation_task: asyncio.Task[Any] | None = None
+    last_target_committed: str = ""
+    line_number: int = 0
+    turn_counter: int = 1
+    kept_turn_history: list[dict[str, Any]] = field(default_factory=list)
+    spoken_clip_history: list[dict[str, Any]] = field(default_factory=list)
+    pending_tts: dict[str, Any] | None = None
+
+
 class ConversationRuntime:
     def __init__(self, *, websocket: WebSocket, session: ConversationSession) -> None:
         self.websocket = websocket
@@ -54,38 +91,40 @@ class ConversationRuntime:
         self.sample_rate_hz = get_int("live.audio.sample_rate_hz", 16000, min_value=8000)
         self.channels = get_int("live.audio.channels", 1, min_value=1)
         self.sample_width_bytes = 2
-        self.asr_language = optional_str("live.asr.language") or _asr_language_for(session.source_language)
-        self.asr_runner = self._build_asr_runner()
+        self.side_a_language = session.side_a_language
+        self.side_b_language = session.side_b_language
+        self.active_lane_id = "a_to_b"
         self.asr_bridge = LiveASRPoolBridge(
             session_id=self.session_id,
             sample_rate_hz=self.sample_rate_hz,
             channels=self.channels,
         )
-        self.translation_runner = self._build_translation_runner()
-        self.translation_bridge = TranslationBridge(
-            source_language=session.source_language,
-            target_language=session.target_language,
-        )
         self.tts_bridge = TTSBridge()
-        self.source_state = SourceTranscriptState()
+        self.lanes = {
+            "a_to_b": self._build_lane(
+                lane_id="a_to_b",
+                source_language=self.side_a_language,
+                target_language=self.side_b_language,
+            ),
+            "b_to_a": self._build_lane(
+                lane_id="b_to_a",
+                source_language=self.side_b_language,
+                target_language=self.side_a_language,
+            ),
+        }
         self.asr_ready: asyncio.Event | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
-        self.asr_inflight: ASRJob | None = None
-        self.translation_task: asyncio.Task[Any] | None = None
         self.send_lock = asyncio.Lock()
         self.listening = False
         self.closed = False
-        self.source_revision = 0
-        self.target_revision = 0
-        self.last_target_committed = ""
-        self.line_number = 0
 
     async def run(self) -> None:
         await self.websocket.accept()
         self.loop = asyncio.get_running_loop()
         self.asr_ready = asyncio.Event()
         try:
-            self.asr_runner.ensure_vad_ready()
+            for lane in self.lanes.values():
+                lane.asr_runner.ensure_vad_ready()
         except Exception as exc:
             await self._send(event("error", self.session_id, code="vad_init_failed", message=str(exc), fatal=True))
             await self.websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="vad_init_failed")
@@ -101,9 +140,10 @@ class ConversationRuntime:
                     "sample_rate_hz": self.sample_rate_hz,
                     "channels": self.channels,
                 },
-                source_language=self.session.source_language,
-                target_language=self.session.target_language,
-                asr_language=self.asr_language,
+                side_a_language=self.side_a_language,
+                side_b_language=self.side_b_language,
+                active_lane_id=self.active_lane_id,
+                lanes={lane_id: self._lane_payload(lane) for lane_id, lane in self.lanes.items()},
             )
         )
         try:
@@ -176,14 +216,17 @@ class ConversationRuntime:
         if msg_type == "pause_listening":
             await self._pause_listening()
             return False
+        if msg_type == "set_active_lane":
+            await self._set_active_lane(lane_id=payload.get("lane_id"))
+            return True
+        if msg_type == "reset_turn":
+            await self._reset_turn()
+            return True
         if msg_type == "speak_now":
             await self._speak_now()
             return True
-        if msg_type == "set_direction":
-            await self._set_direction(
-                source_language=payload.get("source_language"),
-                target_language=payload.get("target_language"),
-            )
+        if msg_type == "tts_playback_complete":
+            await self._tts_playback_complete(payload)
             return True
         await self._send(event("error", self.session_id, code="unsupported_control", message=msg_type))
         return True
@@ -197,17 +240,22 @@ class ConversationRuntime:
             raw = raw[:-remainder]
         if not raw:
             return
-        self.asr_runner.ingest_audio(raw)
+        self._active_lane().asr_runner.ingest_audio(raw)
         await self._process_asr(force=False)
 
     async def _process_asr(self, *, force: bool) -> None:
-        await self._poll_asr()
-        await self._enqueue_asr(force=force)
+        await self._poll_asr_all()
+        await self._enqueue_asr(self._active_lane(), force=force)
 
-    async def _poll_asr(self) -> None:
-        job = self.asr_inflight
-        if job is None:
+    async def _poll_asr_all(self) -> None:
+        for lane in list(self.lanes.values()):
+            await self._poll_asr_lane(lane)
+
+    async def _poll_asr_lane(self, lane: ConversationLane) -> None:
+        inflight = lane.asr_inflight
+        if inflight is None:
             return
+        job = inflight.job
         if not self.asr_bridge.has_terminal_result(job.request_id):
             return
         result = await asyncio.to_thread(
@@ -217,8 +265,10 @@ class ConversationRuntime:
         )
         if not result.done:
             return
+
+        is_current_turn = inflight.turn_id == lane.current_turn.turn_id
         if result.ok:
-            apply = self.asr_runner.apply_result(
+            apply = lane.asr_runner.apply_result(
                 ASRResult(
                     sequence_id=self._sequence_from_request(job.request_id),
                     t0_ms=job.t0_ms,
@@ -232,15 +282,15 @@ class ConversationRuntime:
                     ),
                 )
             )
-            if apply.reason == "commit_applied" and apply.committed_segments:
+            if is_current_turn and apply.reason == "commit_applied" and apply.committed_segments:
                 text = " ".join(seg.text.strip() for seg in apply.committed_segments if seg.text.strip()).strip()
                 if text:
-                    await self._source_event(kind="c", text=text)
+                    await self._source_event(lane, kind="c", text=text)
             preview_text = str(apply.preview.text or "").strip()
-            if apply.reason in {"preview_applied", "commit_applied"} and preview_text:
-                await self._source_event(kind="p", text=preview_text)
+            if is_current_turn and apply.reason in {"preview_applied", "commit_applied"} and preview_text:
+                await self._source_event(lane, kind="p", text=preview_text)
         else:
-            self.asr_runner.apply_result(
+            lane.asr_runner.apply_result(
                 ASRResult(
                     sequence_id=self._sequence_from_request(job.request_id),
                     t0_ms=job.t0_ms,
@@ -249,274 +299,373 @@ class ConversationRuntime:
                     error=result.error,
                 )
             )
-            await self._send(event("error", self.session_id, code="asr_error", message=result.error))
-        self.asr_inflight = None
+            await self._send(
+                event(
+                    "error",
+                    self.session_id,
+                    code="asr_error",
+                    message=result.error,
+                    lane_id=lane.lane_id,
+                    turn_id=inflight.turn_id,
+                )
+            )
+        lane.asr_inflight = None
 
-    async def _enqueue_asr(self, *, force: bool) -> None:
-        if self.asr_inflight is not None:
+    async def _enqueue_asr(self, lane: ConversationLane, *, force: bool) -> None:
+        if lane.asr_inflight is not None:
             return
         if not self.listening and not force:
             return
-        decision = self.asr_runner.maybe_dispatch_work(now_mono=time.monotonic(), force=force)
+        decision = lane.asr_runner.maybe_dispatch_work(now_mono=time.monotonic(), force=force)
         if decision.error:
-            await self._send(event("error", self.session_id, code="asr_dispatch_error", message=decision.error))
+            await self._send(
+                event(
+                    "error",
+                    self.session_id,
+                    code="asr_dispatch_error",
+                    message=decision.error,
+                    lane_id=lane.lane_id,
+                    turn_id=lane.current_turn.turn_id,
+                )
+            )
             return
         if decision.speech_gate_decision is not None and decision.speech_gate_decision.force_commit_requested:
-            await self._commit_preview_tail(speech_gate_forced=True)
+            await self._commit_preview_tail(lane, speech_gate_forced=True)
         work = decision.work_decision.work_item
         if work is None:
             return
         try:
             job = await asyncio.to_thread(
                 self.asr_bridge.enqueue_pcm16,
+                lane_id=lane.lane_id,
                 chunk_index=work.sequence_id,
                 t0_ms=work.t0_ms,
                 t1_ms=work.t1_ms,
                 pcm16le=work.pcm16le,
-                language=self.asr_language,
+                language=lane.asr_language,
             )
         except Exception as exc:
-            self.asr_runner.rollback_inflight_work(sequence_id=work.sequence_id)
-            await self._send(event("error", self.session_id, code="asr_submit_failed", message=str(exc)))
-            return
-        self.asr_inflight = job
-        await self._send(event("asr_status", self.session_id, state="inflight"))
-
-    async def _commit_preview_tail(self, *, speech_gate_forced: bool = False) -> None:
-        segment = self.asr_runner.commit_preview_tail(speech_gate_forced=speech_gate_forced)
-        if segment is None:
-            return
-        text = str(segment.text or "").strip()
-        if text:
-            await self._source_event(kind="c", text=text)
-
-    async def _speak_now(self) -> None:
-        decision = self.asr_runner.manual_commit_preview()
-        retired_ids = {int(seq) for seq in decision.retired_sequence_ids}
-        if retired_ids:
-            job = self.asr_inflight
-            if job is not None and self._sequence_from_request(job.request_id) in retired_ids:
-                self.asr_bridge.discard_request(job.request_id)
-                self.asr_inflight = None
-
-        segment = decision.segment
-        text = str(segment.text or "").strip() if segment is not None else ""
-        if decision.applied and text:
-            await self._source_event(kind="c", text=text)
-            await self._send(
-                event(
-                    "asr_status",
-                    self.session_id,
-                    state="manual_commit",
-                    reason=decision.commit_reason,
-                    retired_sequence_ids=sorted(retired_ids),
-                    restart_t0_ms=decision.restart_t0_ms,
-                )
-            )
-            await self._enqueue_asr(force=True)
-            return
-
-        await self._send(
-            event(
-                "asr_status",
-                self.session_id,
-                state="manual_commit_skipped",
-                reason=decision.reason,
-            )
-        )
-
-    async def _set_direction(self, *, source_language: Any, target_language: Any) -> None:
-        next_source = str(source_language or "").strip()
-        next_target = str(target_language or "").strip()
-        if not next_source or not next_target:
+            lane.asr_runner.rollback_inflight_work(sequence_id=work.sequence_id)
             await self._send(
                 event(
                     "error",
                     self.session_id,
-                    code="invalid_direction",
-                    message="source_language and target_language are required",
+                    code="asr_submit_failed",
+                    message=str(exc),
+                    lane_id=lane.lane_id,
+                    turn_id=lane.current_turn.turn_id,
                 )
             )
             return
-
-        if self.translation_task is not None and not self.translation_task.done():
-            self.translation_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.translation_task
-        self.translation_task = None
-
-        if self.asr_inflight is not None:
-            self.asr_bridge.discard_request(self.asr_inflight.request_id)
-            self.asr_inflight = None
-        ready = self.asr_ready
-        if ready is not None:
-            ready.clear()
-        self.asr_bridge.advance_generation()
-
-        self.session.source_language = next_source
-        self.session.target_language = next_target
-        self.asr_language = optional_str("live.asr.language") or _asr_language_for(next_source)
-        self.asr_runner = self._build_asr_runner()
-        self.asr_runner.ensure_vad_ready()
-        self.translation_runner = self._build_translation_runner()
-        self.translation_bridge = TranslationBridge(
-            source_language=next_source,
-            target_language=next_target,
+        lane.asr_inflight = LaneASRJob(job=job, turn_id=lane.current_turn.turn_id)
+        await self._send(
+            event(
+                "asr_status",
+                self.session_id,
+                state="inflight",
+                lane_id=lane.lane_id,
+                turn_id=lane.current_turn.turn_id,
+            )
         )
-        self.source_state = SourceTranscriptState()
-        self.source_revision += 1
-        self.target_revision += 1
-        self.last_target_committed = ""
-        self.line_number = 0
 
-        SESSIONS.update(
-            self.session_id,
-            source_language=next_source,
-            target_language=next_target,
-            source_revision=self.source_revision,
-            target_revision=self.target_revision,
-            source_committed_text="",
-            target_committed_text="",
-            state="listening" if self.listening else "connected",
+    async def _commit_preview_tail(self, lane: ConversationLane, *, speech_gate_forced: bool = False) -> None:
+        segment = lane.asr_runner.commit_preview_tail(speech_gate_forced=speech_gate_forced)
+        if segment is None:
+            return
+        text = str(segment.text or "").strip()
+        if text:
+            await self._source_event(lane, kind="c", text=text)
+
+    async def _set_active_lane(self, *, lane_id: Any) -> None:
+        next_lane_id = str(lane_id or "").strip()
+        if next_lane_id not in self.lanes:
+            await self._send(
+                event(
+                    "error",
+                    self.session_id,
+                    code="invalid_lane",
+                    message=next_lane_id or "missing_lane_id",
+                )
+            )
+            return
+        self.active_lane_id = next_lane_id
+        lane = self._active_lane()
+        await self._send(
+            event(
+                "active_lane_changed",
+                self.session_id,
+                active_lane_id=self.active_lane_id,
+                lane=self._lane_payload(lane),
+            )
         )
+
+    async def _reset_turn(self) -> None:
+        lane = self._active_lane()
+        old_turn_id = lane.current_turn.turn_id
+        await self._start_new_turn(lane, keep=False)
+        await self._send(
+            event(
+                "turn_reset_ack",
+                self.session_id,
+                lane_id=lane.lane_id,
+                old_turn_id=old_turn_id,
+                new_turn_id=lane.current_turn.turn_id,
+            )
+        )
+
+    async def _speak_now(self) -> None:
+        lane = self._active_lane()
+        turn = lane.current_turn
+        text = _visible_text(turn.target_committed_text, turn.target_preview_text)
+        if not text:
+            await self._send(
+                event(
+                    "tts_status",
+                    self.session_id,
+                    state="skipped",
+                    reason="empty_target",
+                    lane_id=lane.lane_id,
+                    turn_id=turn.turn_id,
+                    message="Nog geen vertaling",
+                )
+            )
+            return
+        if not self.tts_bridge.enabled:
+            await self._send(
+                event(
+                    "tts_status",
+                    self.session_id,
+                    state="disabled",
+                    reason="tts_disabled",
+                    lane_id=lane.lane_id,
+                    turn_id=turn.turn_id,
+                    message="Audio-uitvoer staat uit",
+                )
+            )
+            return
+        try:
+            tts_payload = await asyncio.to_thread(
+                self.tts_bridge.synthesize,
+                session_id=self.session_id,
+                text=text,
+                language=lane.target_language,
+            )
+        except Exception as exc:
+            await self._send(
+                event(
+                    "error",
+                    self.session_id,
+                    code="tts_failed",
+                    message=str(exc),
+                    lane_id=lane.lane_id,
+                    turn_id=turn.turn_id,
+                )
+            )
+            return
+        lane.pending_tts = {
+            "turn_id": turn.turn_id,
+            "artifact_id": tts_payload.get("artifact_id"),
+            "text": text,
+            "tts": dict(tts_payload),
+        }
+        await self._send(
+            event(
+                "tts_clip_ready",
+                self.session_id,
+                lane_id=lane.lane_id,
+                turn_id=turn.turn_id,
+                tts=tts_payload,
+            )
+        )
+
+    async def _tts_playback_complete(self, payload: dict[str, Any]) -> None:
+        lane_id = str(payload.get("lane_id") or "").strip()
+        turn_id = str(payload.get("turn_id") or "").strip()
+        artifact_id = str(payload.get("artifact_id") or "").strip()
+        lane = self.lanes.get(lane_id)
+        if lane is None:
+            return
+        pending = lane.pending_tts or {}
+        if turn_id != lane.current_turn.turn_id:
+            return
+        if turn_id != str(pending.get("turn_id") or ""):
+            return
+        if artifact_id and artifact_id != str(pending.get("artifact_id") or ""):
+            return
+        lane.spoken_clip_history.append(dict(pending))
+        lane.pending_tts = None
+        old_turn_id = lane.current_turn.turn_id
+        await self._start_new_turn(lane, keep=True)
+        await self._send(
+            event(
+                "turn_kept",
+                self.session_id,
+                lane_id=lane.lane_id,
+                old_turn_id=old_turn_id,
+                new_turn_id=lane.current_turn.turn_id,
+            )
+        )
+
+    async def _source_event(self, lane: ConversationLane, *, kind: str, text: str) -> None:
+        turn_id = lane.current_turn.turn_id
+        lane.line_number += 1
+        source_event = SourceEvent(kind=kind, text=text, line_number=lane.line_number)
+        lane.source_state.apply_event(source_event)
+        turn = lane.current_turn
+
+        if kind == "c":
+            turn.source_committed_text = lane.source_state.source_committed_text
+            turn.source_preview_text = ""
+            await self._send(
+                event(
+                    "source_update",
+                    self.session_id,
+                    lane_id=lane.lane_id,
+                    turn_id=turn_id,
+                    reset=False,
+                    committed_append=text,
+                    preview="",
+                )
+            )
+        else:
+            turn.source_preview_text = lane.source_state.source_preview_text
+            await self._send(
+                event(
+                    "source_update",
+                    self.session_id,
+                    lane_id=lane.lane_id,
+                    turn_id=turn_id,
+                    reset=False,
+                    committed_append="",
+                    preview=lane.source_state.source_preview_text,
+                )
+            )
+
+        step = lane.translation_runner.on_source_event(source_event, lane.source_state)
+        if step.dispatch_request is not None:
+            self._schedule_translation(lane, step.dispatch_request, turn_id=turn_id)
+
+    def _schedule_translation(self, lane: ConversationLane, request: LiveDispatchRequest, *, turn_id: str) -> None:
+        if lane.translation_task is not None and not lane.translation_task.done():
+            return
+        lane.translation_task = asyncio.create_task(self._run_translation(lane.lane_id, turn_id, request))
+
+    async def _run_translation(self, lane_id: str, turn_id: str, request: LiveDispatchRequest) -> None:
+        lane = self.lanes[lane_id]
+        current_task = asyncio.current_task()
+        try:
+            translation = await asyncio.to_thread(lane.translation_bridge.run, request)
+            if lane.current_turn.turn_id != turn_id:
+                return
+            step = lane.translation_runner.on_llm_result(request, translation.text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._send(
+                event(
+                    "error",
+                    self.session_id,
+                    code="translation_failed",
+                    message=str(exc),
+                    lane_id=lane_id,
+                    turn_id=turn_id,
+                )
+            )
+            return
+        finally:
+            if lane.translation_task is current_task:
+                lane.translation_task = None
+
+        if lane.current_turn.turn_id != turn_id:
+            return
+        target_state = lane.translation_runner.target_state
+        committed = str(target_state.target_committed_text or "")
+        reset = not committed.startswith(lane.last_target_committed)
+        committed_append = committed if reset else committed[len(lane.last_target_committed) :]
+        lane.last_target_committed = committed
+
+        turn = lane.current_turn
+        turn.target_committed_text = committed
+        turn.target_preview_text = str(target_state.target_preview_text or "")
+        await self._send(
+            event(
+                "target_update",
+                self.session_id,
+                lane_id=lane.lane_id,
+                turn_id=turn_id,
+                reset=reset,
+                committed_append=committed_append,
+                preview=turn.target_preview_text,
+                reason=step.reason,
+                wall_ms=round(float(translation.wall_ms), 1),
+                model=translation.model,
+                tts=None,
+            )
+        )
+        if step.dispatch_request is not None:
+            self._schedule_translation(lane, step.dispatch_request, turn_id=turn_id)
+
+    async def _start_new_turn(self, lane: ConversationLane, *, keep: bool) -> None:
+        if keep and _turn_has_text(lane.current_turn):
+            lane.kept_turn_history.append(
+                {
+                    "turn_id": lane.current_turn.turn_id,
+                    "source_text": _visible_text(
+                        lane.current_turn.source_committed_text,
+                        lane.current_turn.source_preview_text,
+                    ),
+                    "target_text": _visible_text(
+                        lane.current_turn.target_committed_text,
+                        lane.current_turn.target_preview_text,
+                    ),
+                }
+            )
+        await _cancel_task(lane.translation_task)
+        lane.translation_task = None
+        lane.turn_counter += 1
+        lane.current_turn = ConversationTurn(turn_id=f"{lane.lane_id}_turn_{lane.turn_counter}")
+        lane.source_state = SourceTranscriptState()
+        lane.translation_runner = self._build_translation_runner()
+        lane.last_target_committed = ""
+        lane.pending_tts = None
         await self._send(
             event(
                 "source_update",
                 self.session_id,
+                lane_id=lane.lane_id,
+                turn_id=lane.current_turn.turn_id,
                 reset=True,
                 committed_append="",
                 preview="",
-                source_revision=self.source_revision,
             )
         )
         await self._send(
             event(
                 "target_update",
                 self.session_id,
+                lane_id=lane.lane_id,
+                turn_id=lane.current_turn.turn_id,
                 reset=True,
                 committed_append="",
                 preview="",
-                target_revision=self.target_revision,
-                reason="direction_changed",
+                reason="new_turn",
+                tts=None,
             )
         )
-        await self._send(
-            event(
-                "direction_changed",
-                self.session_id,
-                source_language=next_source,
-                target_language=next_target,
-                asr_language=self.asr_language,
-            )
-        )
-
-    async def _source_event(self, *, kind: str, text: str) -> None:
-        self.line_number += 1
-        source_event = SourceEvent(kind=kind, text=text, line_number=self.line_number)
-        self.source_state.apply_event(source_event)
-        self.source_revision += 1
-
-        if kind == "c":
-            await self._send(
-                event(
-                    "source_update",
-                    self.session_id,
-                    reset=False,
-                    committed_append=text,
-                    preview="",
-                    source_revision=self.source_revision,
-                )
-            )
-            SESSIONS.update(
-                self.session_id,
-                source_revision=self.source_revision,
-                source_committed_text=self.source_state.source_committed_text,
-            )
-        else:
-            await self._send(
-                event(
-                    "source_update",
-                    self.session_id,
-                    reset=False,
-                    committed_append="",
-                    preview=self.source_state.source_preview_text,
-                    source_revision=self.source_revision,
-                )
-            )
-
-        step = self.translation_runner.on_source_event(source_event, self.source_state)
-        if step.dispatch_request is not None:
-            self._schedule_translation(step.dispatch_request)
-
-    def _schedule_translation(self, request: LiveDispatchRequest) -> None:
-        if self.translation_task is not None and not self.translation_task.done():
-            return
-        self.translation_task = asyncio.create_task(self._run_translation(request))
-
-    async def _run_translation(self, request: LiveDispatchRequest) -> None:
-        try:
-            translation = await asyncio.to_thread(self.translation_bridge.run, request)
-            step = self.translation_runner.on_llm_result(request, translation.text)
-        except Exception as exc:
-            await self._send(event("error", self.session_id, code="translation_failed", message=str(exc)))
-            return
-
-        target_state = self.translation_runner.target_state
-        committed = str(target_state.target_committed_text or "")
-        reset = not committed.startswith(self.last_target_committed)
-        committed_append = committed if reset else committed[len(self.last_target_committed) :]
-        self.last_target_committed = committed
-        if step.result_applied:
-            self.target_revision += 1
-
-        tts_payload = None
-        tts_error = ""
-        if committed_append.strip() and self.tts_bridge.enabled:
-            try:
-                tts_payload = await asyncio.to_thread(
-                    self.tts_bridge.synthesize,
-                    session_id=self.session_id,
-                    text=committed_append,
-                    language=self.session.target_language,
-                )
-                SESSIONS.add_artifact(self.session_id, tts_payload)
-            except Exception as exc:
-                tts_error = str(exc)
-
-        await self._send(
-            event(
-                "target_update",
-                self.session_id,
-                reset=reset,
-                committed_append=committed_append,
-                preview=str(target_state.target_preview_text or ""),
-                target_revision=self.target_revision,
-                reason=step.reason,
-                wall_ms=round(float(translation.wall_ms), 1),
-                model=translation.model,
-                tts=tts_payload,
-                tts_error=tts_error,
-            )
-        )
-        SESSIONS.update(
-            self.session_id,
-            target_revision=self.target_revision,
-            target_committed_text=committed,
-        )
-        if step.dispatch_request is not None:
-            self.translation_task = None
-            self._schedule_translation(step.dispatch_request)
 
     async def _pause_listening(self) -> None:
         self.listening = False
         SESSIONS.update(self.session_id, state="finalizing")
         await self._send(event("state", self.session_id, state="finalizing"))
-        self.asr_runner.finalize_input()
-        await self._process_asr(force=True)
+        for lane in self.lanes.values():
+            lane.asr_runner.finalize_input()
+        await self._poll_asr_all()
+        for lane in self.lanes.values():
+            await self._enqueue_asr(lane, force=True)
         deadline = time.monotonic() + get_float("live.timing.drain_wait_s", 20.0, min_value=0.0)
-        while self.asr_inflight is not None and time.monotonic() < deadline:
-            await self._poll_asr()
-            if self.asr_inflight is None:
+        while any(lane.asr_inflight is not None for lane in self.lanes.values()) and time.monotonic() < deadline:
+            await self._poll_asr_all()
+            if not any(lane.asr_inflight is not None for lane in self.lanes.values()):
                 break
             ready = self.asr_ready
             timeout = min(0.1, max(0.0, deadline - time.monotonic()))
@@ -526,10 +675,12 @@ class ConversationRuntime:
                     ready.clear()
             else:
                 await asyncio.sleep(timeout)
-        await self._commit_preview_tail()
-        if self.translation_task is not None and not self.translation_task.done():
+        for lane in self.lanes.values():
+            await self._commit_preview_tail(lane)
+        tasks = [lane.translation_task for lane in self.lanes.values() if lane.translation_task is not None and not lane.translation_task.done()]
+        if tasks:
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self.translation_task, timeout=30.0)
+                await asyncio.wait_for(asyncio.gather(*tasks), timeout=30.0)
         SESSIONS.update(self.session_id, state="completed")
         await self._send(event("ended", self.session_id, reason="pause_listening"))
         with contextlib.suppress(Exception):
@@ -538,10 +689,9 @@ class ConversationRuntime:
 
     async def _cleanup(self) -> None:
         self.closed = True
-        if self.translation_task is not None and not self.translation_task.done():
-            self.translation_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.translation_task
+        for lane in self.lanes.values():
+            await _cancel_task(lane.translation_task)
+            lane.translation_task = None
         self.asr_bridge.stop_completion_stream()
         SESSIONS.close(self.session_id, reason="closed")
 
@@ -549,7 +699,26 @@ class ConversationRuntime:
         async with self.send_lock:
             await self.websocket.send_json(payload)
 
-    def _build_asr_runner(self) -> LiveASRRunner:
+    def _active_lane(self) -> ConversationLane:
+        return self.lanes[self.active_lane_id]
+
+    def _build_lane(self, *, lane_id: str, source_language: str, target_language: str) -> ConversationLane:
+        asr_language = optional_str("live.asr.language") or _asr_language_for(source_language)
+        return ConversationLane(
+            lane_id=lane_id,
+            source_language=source_language,
+            target_language=target_language,
+            asr_language=asr_language,
+            asr_runner=self._build_asr_runner(asr_language=asr_language),
+            translation_runner=self._build_translation_runner(),
+            translation_bridge=TranslationBridge(
+                source_language=source_language,
+                target_language=target_language,
+            ),
+            current_turn=ConversationTurn(turn_id=f"{lane_id}_turn_1"),
+        )
+
+    def _build_asr_runner(self, *, asr_language: str | None) -> LiveASRRunner:
         audio_format = AudioFormat(
             sample_rate_hz=self.sample_rate_hz,
             channels=self.channels,
@@ -596,7 +765,7 @@ class ConversationRuntime:
                 },
             }
         )
-        return LiveASRRunner(audio_format=audio_format, settings=settings, language=self.asr_language)
+        return LiveASRRunner(audio_format=audio_format, settings=settings, language=asr_language)
 
     def _build_translation_runner(self) -> LiveRunner:
         return LiveRunner(
@@ -618,6 +787,16 @@ class ConversationRuntime:
                 return int(part)
         return 0
 
+    @staticmethod
+    def _lane_payload(lane: ConversationLane) -> dict[str, Any]:
+        return {
+            "lane_id": lane.lane_id,
+            "source_language": lane.source_language,
+            "target_language": lane.target_language,
+            "asr_language": lane.asr_language,
+            "current_turn_id": lane.current_turn.turn_id,
+        }
+
 
 async def _cancel_task(task: asyncio.Task[Any] | None) -> None:
     if task is None or task.done():
@@ -632,3 +811,20 @@ def _asr_language_for(language: str) -> str | None:
     if not key:
         return None
     return _ASR_LANGUAGE_CODES.get(key) or (key if len(key) == 2 else None)
+
+
+def _visible_text(committed: str, preview: str) -> str:
+    committed_text = str(committed or "").strip()
+    preview_text = str(preview or "").strip()
+    if not committed_text:
+        return preview_text
+    if not preview_text:
+        return committed_text
+    return f"{committed_text} {preview_text}"
+
+
+def _turn_has_text(turn: ConversationTurn) -> bool:
+    return bool(
+        _visible_text(turn.source_committed_text, turn.source_preview_text)
+        or _visible_text(turn.target_committed_text, turn.target_preview_text)
+    )

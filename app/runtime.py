@@ -106,6 +106,7 @@ class ConversationLane:
     source_state: SourceTranscriptState = field(default_factory=SourceTranscriptState)
     asr_inflight: LaneASRJob | None = None
     translation_task: asyncio.Task[Any] | None = None
+    tts_task: asyncio.Task[Any] | None = None
     last_target_committed: str = ""
     line_number: int = 0
     pending_tts: dict[str, Any] | None = None
@@ -469,6 +470,19 @@ class ConversationRuntime:
     async def _speak_now(self) -> None:
         lane = self._current_lane()
         turn = self.current_turn
+        if turn.state == TurnState.OPEN_SPEAKING or lane.tts_task is not None:
+            await self._send(
+                event(
+                    "tts_status",
+                    self.session_id,
+                    state="busy",
+                    reason="tts_busy",
+                    lane_id=lane.lane_id,
+                    turn_id=turn.turn_id,
+                    message="Audio is already being prepared",
+                )
+            )
+            return
         text = _turn_speakable_target_text(turn)
         if not text:
             await self._send(
@@ -509,6 +523,13 @@ class ConversationRuntime:
                 part.speech_state = "speaking"
         self._refresh_turn_state()
         await self._send_turn_update(reason="speak_now")
+        lane.tts_task = asyncio.create_task(
+            self._run_tts(lane.lane_id, turn.turn_id, text, speaking_part_ids)
+        )
+
+    async def _run_tts(self, lane_id: str, turn_id: str, text: str, speaking_part_ids: list[str]) -> None:
+        lane = self.lanes[lane_id]
+        current_task = asyncio.current_task()
         try:
             tts_payload = await asyncio.to_thread(
                 self.tts_bridge.synthesize,
@@ -516,12 +537,15 @@ class ConversationRuntime:
                 text=text,
                 language=lane.target_language,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            for part in turn.parts:
-                if part.part_id in speaking_part_ids and part.speech_state == "speaking":
-                    part.speech_state = "pending"
-            self._refresh_turn_state()
-            await self._send_turn_update(reason="tts_failed")
+            if self.current_turn.turn_id == turn_id and self.current_turn.state == TurnState.OPEN_SPEAKING:
+                for part in self.current_turn.parts:
+                    if part.part_id in speaking_part_ids and part.speech_state == "speaking":
+                        part.speech_state = "pending"
+                self._refresh_turn_state()
+                await self._send_turn_update(reason="tts_failed")
             await self._send(
                 event(
                     "error",
@@ -529,14 +553,18 @@ class ConversationRuntime:
                     code="tts_failed",
                     message=str(exc),
                     lane_id=lane.lane_id,
-                    turn_id=turn.turn_id,
+                    turn_id=turn_id,
                 )
             )
             return
-        if self.current_turn.turn_id != turn.turn_id or self.current_turn.state != TurnState.OPEN_SPEAKING:
+        finally:
+            if lane.tts_task is current_task:
+                lane.tts_task = None
+
+        if self.current_turn.turn_id != turn_id or self.current_turn.state != TurnState.OPEN_SPEAKING:
             return
         lane.pending_tts = {
-            "turn_id": turn.turn_id,
+            "turn_id": turn_id,
             "artifact_id": tts_payload.get("artifact_id"),
             "text": text,
             "part_ids": list(speaking_part_ids),
@@ -547,7 +575,7 @@ class ConversationRuntime:
                 "tts_clip_ready",
                 self.session_id,
                 lane_id=lane.lane_id,
-                turn_id=turn.turn_id,
+                turn_id=turn_id,
                 tts=tts_payload,
             )
         )
@@ -667,7 +695,9 @@ class ConversationRuntime:
         lane = self.lanes[turn.lane_id]
         self._close_asr_scope_for_turn(lane)
         await _cancel_task(lane.translation_task)
+        await _cancel_task(lane.tts_task)
         lane.translation_task = None
+        lane.tts_task = None
         lane.pending_tts = None
         turn.state = outcome
         if outcome == TurnState.CLOSED:
@@ -778,7 +808,9 @@ class ConversationRuntime:
         self.closed = True
         for lane in self.lanes.values():
             await _cancel_task(lane.translation_task)
+            await _cancel_task(lane.tts_task)
             lane.translation_task = None
+            lane.tts_task = None
         self.asr_bridge.stop_completion_stream()
         SESSIONS.close(self.session_id, reason="closed")
 

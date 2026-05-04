@@ -4,6 +4,12 @@ import { AudioQueue } from './shared/audio-playback.js';
 import { languages } from './shared/languages.js';
 
 const LANE_IDS = ['a_to_b', 'b_to_a'];
+const TURN_STATES = {
+  OPEN_EMPTY: 'open_empty',
+  OPEN_ACTIVE_UNSPOKEN: 'open_active_unspoken',
+  OPEN_SPEAKING: 'open_speaking',
+  OPEN_SPOKEN_IDLE: 'open_spoken_idle',
+};
 
 const els = {
   listenButton: document.querySelector('#listenButton'),
@@ -19,7 +25,7 @@ const els = {
   sourceText: document.querySelector('#sourceText'),
   targetText: document.querySelector('#targetText'),
   speakNowButton: document.querySelector('#speakNowButton'),
-  resetTurnButton: document.querySelector('#resetTurnButton'),
+  clearTurnButton: document.querySelector('#clearTurnButton'),
   swapButton: document.querySelector('#swapButton'),
   audioResumeButton: document.querySelector('#audioResumeButton'),
   ttsAudio: document.querySelector('#ttsAudio'),
@@ -48,6 +54,8 @@ const els = {
   ttsOutputDetail: document.querySelector('#ttsOutputDetail'),
 };
 
+const initialLanes = buildLocalLanes('Dutch', 'English');
+
 const state = {
   socket: null,
   capture: null,
@@ -55,9 +63,9 @@ const state = {
   finalizing: false,
   sideALanguage: 'Dutch',
   sideBLanguage: 'English',
-  activeLaneId: 'a_to_b',
   requestedStartLaneId: 'a_to_b',
-  lanes: buildLocalLanes('Dutch', 'English'),
+  lanes: initialLanes,
+  currentTurn: createLocalTurn('a_to_b', initialLanes),
   audioStatus: '',
   status: 'idle',
   captureMutedForPlayback: false,
@@ -126,7 +134,7 @@ async function init() {
   els.targetLanguageChip.addEventListener('click', () => openLanguageSheet('target'));
   els.swapButton.addEventListener('click', swapDirection);
   els.speakNowButton.addEventListener('click', speakNow);
-  els.resetTurnButton.addEventListener('click', resetTurn);
+  els.clearTurnButton.addEventListener('click', clearTurn);
   els.settingsButton.addEventListener('click', openSettingsSheet);
   els.settingsBackButton.addEventListener('click', handleSettingsBack);
   els.settingsMicrophoneNav.addEventListener('click', () => setSettingsPage('microphone'));
@@ -153,8 +161,9 @@ async function init() {
 }
 
 async function startListening({ statusDetail = 'Opening connection' } = {}) {
-  clearAllLanes();
-  state.requestedStartLaneId = state.activeLaneId;
+  const startLaneId = currentLaneId();
+  clearAllLanes({ laneId: startLaneId });
+  state.requestedStartLaneId = startLaneId;
   setListenBusy(true);
   setStatus('connecting', statusDetail);
   try {
@@ -186,7 +195,7 @@ async function startListening({ statusDetail = 'Opening connection' } = {}) {
       preGain: state.audioSettings.preGain,
       autoGainControl: state.audioSettings.autoGainControl,
       onChunk: (buffer) => {
-        if (!state.captureMutedForPlayback) state.socket?.sendAudio(buffer);
+        if (shouldSendMicrophoneAudio()) state.socket?.sendAudio(buffer);
       },
       onLevel: (level) => renderMicLevel(level),
     });
@@ -227,32 +236,37 @@ function speakNow() {
     audioQueue.playOrResume();
     return;
   }
-  if (activeTargetText() && state.socket?.speakNow()) {
+  if (state.currentTurn.speakableTargetText && state.currentTurn.state !== TURN_STATES.OPEN_SPEAKING && state.socket?.speakNow()) {
     els.miniStatus.textContent = 'Creating audio';
   }
 }
 
-function resetTurn() {
+function clearTurn() {
   if (state.finalizing) return;
-  if (state.socket?.resetTurn()) {
+  if (state.socket?.clearTurn()) {
+    audioQueue.clear();
     els.miniStatus.textContent = 'Clearing turn';
   }
 }
 
+function shouldSendMicrophoneAudio() {
+  return !state.captureMutedForPlayback && state.currentTurn.state !== TURN_STATES.OPEN_SPEAKING;
+}
+
 function swapDirection() {
-  const nextLaneId = state.activeLaneId === 'a_to_b' ? 'b_to_a' : 'a_to_b';
+  const nextLaneId = currentLaneId() === 'a_to_b' ? 'b_to_a' : 'a_to_b';
   if (state.finalizing) {
     els.miniStatus.textContent = 'Wait until finalizing is done';
     return;
   }
   if (state.socket?.isOpen()) {
-    state.socket.setActiveLane(nextLaneId);
+    audioQueue.clear();
+    state.socket.nextTurn(nextLaneId);
     els.miniStatus.textContent = 'Switching direction';
     return;
   }
-  applyTurnBoundary(activeLane(), '');
   audioQueue.clear();
-  state.activeLaneId = nextLaneId;
+  state.currentTurn = createLocalTurn(nextLaneId, state.lanes);
   enableTranscriptAutoFollow();
   renderLanguageChips();
   renderTranscript();
@@ -265,18 +279,6 @@ function handleMessage(msg) {
     applyReady(msg);
     return;
   }
-  if (msg.type === 'active_lane_changed') {
-    state.activeLaneId = msg.active_lane_id || state.activeLaneId;
-    if (msg.lane) mergeLanePayload(msg.lane.lane_id || state.activeLaneId, msg.lane);
-    audioQueue.clear();
-    hideVadHint();
-    enableTranscriptAutoFollow();
-    renderLanguageChips();
-    renderTranscript();
-    updateActionButtons();
-    els.miniStatus.textContent = directionLabel();
-    return;
-  }
   if (msg.type === 'state') {
     setStatus(msg.state || 'idle', statusLabel(msg.state));
     return;
@@ -285,37 +287,12 @@ function handleMessage(msg) {
     handleVadState(msg);
     return;
   }
-  if (msg.type === 'source_update') {
-    const lane = laneForMessage(msg);
-    if (!shouldApplyTurnMessage(lane, msg)) return;
-    if (msg.reset) {
-      lane.sourceCommitted = '';
-    } else {
-      lane.sourceCommitted = applyCommittedDelta(lane.sourceCommitted, msg);
-    }
-    lane.sourcePreview = msg.preview || '';
-    if (lane.laneId === state.activeLaneId) renderTranscript();
-    if (msg.committed_append) els.miniStatus.textContent = 'Translating';
-    updateActionButtons();
-    return;
-  }
-  if (msg.type === 'target_update') {
-    const lane = laneForMessage(msg);
-    if (!shouldApplyTurnMessage(lane, msg)) return;
-    if (msg.reset) {
-      lane.targetCommitted = '';
-    } else {
-      lane.targetCommitted = applyCommittedDelta(lane.targetCommitted, msg);
-    }
-    lane.targetPreview = msg.preview || '';
-    if (lane.laneId === state.activeLaneId) renderTranscript();
-    if (msg.committed_append) els.miniStatus.textContent = 'Translation ready';
-    updateActionButtons();
+  if (msg.type === 'turn_update') {
+    applyTurnUpdate(msg);
     return;
   }
   if (msg.type === 'tts_clip_ready') {
-    const lane = laneForMessage(msg);
-    if (!shouldApplyTurnMessage(lane, msg)) return;
+    if (!shouldApplyCurrentTurnMessage(msg)) return;
     if (msg.tts) {
       audioQueue.enqueue({
         ...msg.tts,
@@ -330,13 +307,6 @@ function handleMessage(msg) {
   }
   if (msg.type === 'tts_status') {
     els.miniStatus.textContent = msg.message || msg.reason || '';
-    updateActionButtons();
-    return;
-  }
-  if (msg.type === 'turn_reset_ack') {
-    const lane = ensureLane(msg.lane_id);
-    applyTurnBoundary(lane, msg.new_turn_id);
-    if (lane.laneId === state.activeLaneId) renderTranscript();
     updateActionButtons();
     return;
   }
@@ -369,25 +339,53 @@ function applyReady(msg) {
   for (const laneId of Object.keys(msg.lanes || {})) {
     mergeLanePayload(laneId, msg.lanes[laneId]);
   }
-  state.activeLaneId = msg.active_lane_id || state.activeLaneId;
+  applyCurrentTurn(msg.current_turn || createLocalTurn('a_to_b', state.lanes));
   hideVadHint();
   enableTranscriptAutoFollow();
   renderLanguageChips();
   renderTranscript();
   updateActionButtons();
   els.miniStatus.textContent = directionLabel();
-  if (state.requestedStartLaneId !== state.activeLaneId) {
-    state.socket?.setActiveLane(state.requestedStartLaneId);
+  if (state.requestedStartLaneId !== currentLaneId()) {
+    state.socket?.nextTurn(state.requestedStartLaneId);
   }
 }
 
-function applyCommittedDelta(current, msg) {
-  const append = String(msg.committed_append || '');
-  if (msg.reset) return append;
-  if (!append) return current;
-  if (!current) return append;
-  if (current.endsWith(' ') || append.startsWith(' ') || append.startsWith('\n')) return current + append;
-  return `${current} ${append}`;
+function applyTurnUpdate(msg) {
+  for (const laneId of Object.keys(msg.lanes || {})) {
+    mergeLanePayload(laneId, msg.lanes[laneId]);
+  }
+  const previousLaneId = currentLaneId();
+  applyCurrentTurn(msg.current_turn || state.currentTurn);
+  const laneChanged = previousLaneId !== currentLaneId();
+  if (laneChanged || msg.reason === 'clear_turn' || msg.reason === 'next_turn') {
+    audioQueue.clear();
+    hideVadHint();
+    enableTranscriptAutoFollow();
+  }
+  renderLanguageChips();
+  renderTranscript();
+  updateActionButtons();
+  renderTurnStatus(msg.reason);
+}
+
+function applyCurrentTurn(payload) {
+  state.currentTurn = normalizeTurnPayload(payload);
+}
+
+function renderTurnStatus(reason) {
+  if (state.audioStatus) return;
+  if (reason === 'source_c') {
+    els.miniStatus.textContent = 'Translating';
+  } else if (reason === 'translation_update') {
+    els.miniStatus.textContent = 'Translation ready';
+  } else if (reason === 'speak_now') {
+    els.miniStatus.textContent = 'Creating audio';
+  } else if (reason === 'clear_turn') {
+    els.miniStatus.textContent = 'Turn cleared';
+  } else if (reason === 'next_turn' || reason === 'tts_playback_complete') {
+    els.miniStatus.textContent = directionLabel();
+  }
 }
 
 function cleanupClientSession({ keepSocket = false } = {}) {
@@ -403,8 +401,9 @@ function cleanupClientSession({ keepSocket = false } = {}) {
   }
 }
 
-function clearAllLanes() {
+function clearAllLanes({ laneId = currentLaneId() } = {}) {
   state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
+  state.currentTurn = createLocalTurn(laneId, state.lanes);
   els.miniStatus.textContent = '';
   audioQueue.clear();
   hideVadHint();
@@ -423,15 +422,16 @@ function updateListenButton() {
 
 function updateActionButtons() {
   updateSpeakNowButton();
-  updateResetTurnButton();
+  updateClearTurnButton();
   renderLanguageChips();
 }
 
 function updateSpeakNowButton() {
-  const canSpeakTarget = Boolean(activeTargetText() && state.socket?.isOpen());
+  const turnIsSpeaking = state.currentTurn.state === TURN_STATES.OPEN_SPEAKING;
+  const canSpeakTarget = Boolean(state.currentTurn.speakableTargetText && state.socket?.isOpen() && !turnIsSpeaking);
   const canPlayAudio = Boolean(audioQueue?.hasAudio() && state.socket?.isOpen());
   els.speakNowButton.disabled = !(canSpeakTarget || canPlayAudio) || state.finalizing;
-  els.speakNowButton.classList.toggle('is-busy', state.finalizing);
+  els.speakNowButton.classList.toggle('is-busy', state.finalizing || turnIsSpeaking);
   if (state.finalizing) {
     els.speakNowButton.textContent = 'Finalizing...';
   } else if (state.audioStatus.startsWith('Playing')) {
@@ -443,9 +443,9 @@ function updateSpeakNowButton() {
   }
 }
 
-function updateResetTurnButton() {
-  const hasText = Boolean(activeSourceText() || activeTargetText());
-  els.resetTurnButton.disabled = state.finalizing || !hasText || !state.socket?.isOpen();
+function updateClearTurnButton() {
+  const hasText = Boolean(state.currentTurn.sourceText || state.currentTurn.targetText || state.currentTurn.parts.length);
+  els.clearTurnButton.disabled = state.finalizing || !hasText || !state.socket?.isOpen();
 }
 
 function setStatus(status, detail) {
@@ -490,7 +490,7 @@ function closeLanguageSheet() {
 }
 
 function renderLanguageOptions(role) {
-  const lane = activeLane();
+  const lane = currentLane();
   const current = role === 'source' ? lane.sourceLanguage : lane.targetLanguage;
   const recent = uniqueLanguages([current, 'English', 'Dutch', 'German']);
   const recentGroup = createLanguageGroup('Recent', recent, current, role);
@@ -568,7 +568,7 @@ function renderSettingsPage() {
 
 function setVisibleLanguage(role, value) {
   const next = normalizeLanguageName(value);
-  if (state.activeLaneId === 'a_to_b') {
+  if (currentLaneId() === 'a_to_b') {
     if (role === 'source') state.sideALanguage = next;
     else state.sideBLanguage = next;
   } else if (role === 'source') {
@@ -577,6 +577,7 @@ function setVisibleLanguage(role, value) {
     state.sideALanguage = next;
   }
   state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
+  state.currentTurn = createLocalTurn(currentLaneId(), state.lanes);
   renderLanguageChips();
   renderTranscript();
   updateActionButtons();
@@ -632,9 +633,7 @@ function renderTtsOutputState(tts) {
 }
 
 function handleVadState(msg) {
-  const lane = laneForMessage(msg);
-  if (lane.laneId !== state.activeLaneId) return;
-  if (!shouldApplyTurnMessage(lane, msg)) return;
+  if (!shouldApplyCurrentTurnMessage(msg)) return;
   if (!state.listening) {
     hideVadHint();
     return;
@@ -675,7 +674,7 @@ function renderMicLevel(value) {
 }
 
 function renderLanguageChips() {
-  const lane = activeLane();
+  const lane = currentLane();
   const locked = state.listening || state.finalizing;
   els.sourceLanguageCode.textContent = codeForLanguage(lane.sourceLanguage);
   els.targetLanguageCode.textContent = codeForLanguage(lane.targetLanguage);
@@ -686,13 +685,35 @@ function renderLanguageChips() {
 }
 
 function renderTranscript() {
-  const lane = activeLane();
-  renderTextStream(els.sourceText, lane.sourceCommitted, lane.sourcePreview);
-  renderTextStream(els.targetText, lane.targetCommitted, lane.targetPreview);
+  const lane = currentLane();
+  renderTurnStream(els.sourceText, state.currentTurn.parts, 'source', state.currentTurn.sourceText);
+  renderTurnStream(els.targetText, state.currentTurn.parts, 'target', state.currentTurn.targetText);
   els.sourcePaneMeta.textContent = codeForLanguage(lane.sourceLanguage);
   els.targetPaneMeta.textContent = codeForLanguage(lane.targetLanguage);
   pinToBottomIfFollowing(els.sourceText);
   pinToBottomIfFollowing(els.targetText);
+}
+
+function renderTurnStream(el, parts, role, fallbackText) {
+  const fragment = document.createDocumentFragment();
+  for (const part of parts || []) {
+    const committedText = role === 'source' ? part.sourceCommittedText : part.targetCommittedText;
+    const previewText = role === 'source' ? part.sourcePreviewText : part.targetPreviewText;
+    if (!visibleText(committedText, previewText)) continue;
+    const row = document.createElement('div');
+    row.className = 'turn-part';
+    if (part.speechState === 'spoken') row.classList.add('is-spoken');
+    if (part.speechState === 'speaking') row.classList.add('is-speaking');
+    renderTextStream(row, committedText, previewText);
+    fragment.append(row);
+  }
+  if (!fragment.childNodes.length && fallbackText) {
+    const row = document.createElement('div');
+    row.className = 'turn-part';
+    row.textContent = String(fallbackText || '');
+    fragment.append(row);
+  }
+  el.replaceChildren(fragment);
 }
 
 function renderTextStream(el, committed, preview) {
@@ -721,75 +742,112 @@ function buildLocalLanes(sideALanguage, sideBLanguage) {
 function createLane(laneId, sourceLanguage, targetLanguage) {
   return {
     laneId,
-    turnId: '',
     sourceLanguage,
     targetLanguage,
-    sourceCommitted: '',
-    sourcePreview: '',
-    targetCommitted: '',
-    targetPreview: '',
   };
+}
+
+function createLocalTurn(laneId, lanes) {
+  const safeLaneId = LANE_IDS.includes(laneId) ? laneId : 'a_to_b';
+  const lane = lanes?.[safeLaneId] || createLane(safeLaneId, 'Dutch', 'English');
+  return {
+    turnId: '',
+    laneId: safeLaneId,
+    direction: `${lane.sourceLanguage}->${lane.targetLanguage}`,
+    state: TURN_STATES.OPEN_EMPTY,
+    sourceLanguage: lane.sourceLanguage,
+    targetLanguage: lane.targetLanguage,
+    sourceText: '',
+    targetText: '',
+    speakableTargetText: '',
+    canSpeakNow: false,
+    parts: [],
+  };
+}
+
+function normalizeTurnPayload(payload) {
+  const fallback = createLocalTurn(currentLaneId(), state.lanes);
+  const laneId = LANE_IDS.includes(payload?.lane_id) ? payload.lane_id : fallback.laneId;
+  const lane = ensureLane(laneId);
+  const parts = Array.isArray(payload?.parts) ? payload.parts.map(normalizeTurnPart) : [];
+  const sourceText = String(payload?.source_text || joinPartText(parts, 'source') || '');
+  const targetText = String(payload?.target_text || joinPartText(parts, 'target') || '');
+  const speakableTargetText = String(payload?.speakable_target_text || joinSpeakableTargetText(parts) || '');
+  return {
+    turnId: String(payload?.turn_id || fallback.turnId),
+    laneId,
+    direction: String(payload?.direction || `${lane.sourceLanguage}->${lane.targetLanguage}`),
+    state: String(payload?.state || TURN_STATES.OPEN_EMPTY),
+    sourceLanguage: normalizeLanguageName(payload?.source_language || lane.sourceLanguage),
+    targetLanguage: normalizeLanguageName(payload?.target_language || lane.targetLanguage),
+    sourceText,
+    targetText,
+    speakableTargetText,
+    canSpeakNow: Boolean(payload?.can_speak_now ?? speakableTargetText),
+    parts,
+  };
+}
+
+function normalizeTurnPart(part) {
+  const sourceCommittedText = String(part?.source_committed_text || '');
+  const sourcePreviewText = String(part?.source_preview_text || '');
+  const targetCommittedText = String(part?.target_committed_text || '');
+  const targetPreviewText = String(part?.target_preview_text || '');
+  return {
+    partId: String(part?.part_id || ''),
+    speechState: String(part?.speech_state || 'pending'),
+    sourceCommittedText,
+    sourcePreviewText,
+    sourceText: String(part?.source_text || visibleText(sourceCommittedText, sourcePreviewText)),
+    targetCommittedText,
+    targetPreviewText,
+    targetText: String(part?.target_text || visibleText(targetCommittedText, targetPreviewText)),
+  };
+}
+
+function joinPartText(parts, role) {
+  return (parts || [])
+    .map((part) => role === 'source' ? part.sourceText : part.targetText)
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function joinSpeakableTargetText(parts) {
+  return (parts || [])
+    .filter((part) => part.speechState !== 'spoken')
+    .map((part) => part.targetText)
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 function mergeLanePayload(laneId, payload) {
   const lane = ensureLane(laneId);
   lane.sourceLanguage = normalizeLanguageName(payload.source_language || lane.sourceLanguage);
   lane.targetLanguage = normalizeLanguageName(payload.target_language || lane.targetLanguage);
-  const nextTurnId = String(payload.current_turn_id || '').trim();
-  if (nextTurnId && lane.turnId && lane.turnId !== nextTurnId) {
-    applyTurnBoundary(lane, nextTurnId);
-  } else if (nextTurnId) {
-    lane.turnId = nextTurnId;
-  }
 }
 
-function laneForMessage(msg) {
-  return ensureLane(msg.lane_id || state.activeLaneId);
-}
-
-function shouldApplyTurnMessage(lane, msg) {
+function shouldApplyCurrentTurnMessage(msg) {
+  const laneId = String(msg.lane_id || '').trim();
+  if (laneId && laneId !== currentLaneId()) return false;
   const msgTurnId = String(msg.turn_id || '').trim();
   if (!msgTurnId) return true;
-  if (msg.reset === true) {
-    lane.turnId = msgTurnId;
-    return true;
-  }
-  if (!lane.turnId) {
-    lane.turnId = msgTurnId;
-    return true;
-  }
-  return msgTurnId === lane.turnId;
-}
-
-function applyTurnBoundary(lane, newTurnId) {
-  const nextTurnId = String(newTurnId || '').trim();
-  if (nextTurnId) lane.turnId = nextTurnId;
-  lane.sourceCommitted = '';
-  lane.sourcePreview = '';
-  lane.targetCommitted = '';
-  lane.targetPreview = '';
+  return msgTurnId === state.currentTurn.turnId;
 }
 
 function ensureLane(laneId) {
-  const safeLaneId = LANE_IDS.includes(laneId) ? laneId : state.activeLaneId;
+  const safeLaneId = LANE_IDS.includes(laneId) ? laneId : currentLaneId();
   if (!state.lanes[safeLaneId]) {
     state.lanes[safeLaneId] = createLane(safeLaneId, state.sideALanguage, state.sideBLanguage);
   }
   return state.lanes[safeLaneId];
 }
 
-function activeLane() {
-  return ensureLane(state.activeLaneId);
+function currentLaneId() {
+  return LANE_IDS.includes(state.currentTurn?.laneId) ? state.currentTurn.laneId : 'a_to_b';
 }
 
-function activeSourceText() {
-  const lane = activeLane();
-  return visibleText(lane.sourceCommitted, lane.sourcePreview);
-}
-
-function activeTargetText() {
-  const lane = activeLane();
-  return visibleText(lane.targetCommitted, lane.targetPreview);
+function currentLane() {
+  return ensureLane(currentLaneId());
 }
 
 function visibleText(committed, preview) {
@@ -808,7 +866,7 @@ function previewSuffixText(committed, preview) {
 }
 
 function directionLabel() {
-  const lane = activeLane();
+  const lane = currentLane();
   return `${codeForLanguage(lane.sourceLanguage)} -> ${codeForLanguage(lane.targetLanguage)}`;
 }
 

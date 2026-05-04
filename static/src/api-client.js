@@ -79,15 +79,15 @@ export class SessionSocket {
     return true;
   }
 
-  setActiveLane(laneId) {
+  nextTurn(laneId) {
     if (!this.isOpen()) return false;
-    this.ws.send(JSON.stringify({ type: 'set_active_lane', lane_id: laneId }));
+    this.ws.send(JSON.stringify({ type: 'next_turn', lane_id: laneId }));
     return true;
   }
 
-  resetTurn() {
+  clearTurn() {
     if (!this.isOpen()) return false;
-    this.ws.send(JSON.stringify({ type: 'reset_turn' }));
+    this.ws.send(JSON.stringify({ type: 'clear_turn' }));
     return true;
   }
 

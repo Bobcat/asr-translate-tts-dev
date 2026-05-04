@@ -14,7 +14,7 @@ WhisperX segment, and it does not claim to be one semantic speech act. A
 `turn_part` groups the source text, target text, and speech state that belong
 together for the live UI.
 
-`lane` is a backend routing context, for example `nl_to_en` or `en_to_nl`. A lane
+`lane` is a backend routing context, currently `a_to_b` or `b_to_a`. A lane
 selects the ASR, translation, and TTS path used by a turn. The user-facing action
 is starting the next turn, not browsing between lanes.
 
@@ -74,7 +74,7 @@ current_turn
     -> keep the current turn open
     -> further ASR/translation starts in a new current part
 
-  next_turn(direction)
+  next_turn(lane_id)
     -> close the current turn
     -> create a new current turn for the requested direction
     -> route the new turn through the matching backend lane
@@ -136,18 +136,18 @@ DISCARDED              x           x                     x              x       
 ```
 
 1. First ASR/translation content arrives in an empty turn.
-2. `next_turn(direction)` closes an empty current turn.
+2. `next_turn(lane_id)` closes an empty current turn.
 3. `clear_turn` discards an empty current turn.
 4. `speak_now` starts TTS for not-yet-spoken target text.
-5. `next_turn(direction)` closes an active unsaid turn.
+5. `next_turn(lane_id)` closes an active unsaid turn.
 6. `clear_turn` discards an active unsaid turn.
 7. `tts_playback_complete` marks the speaking part(s) as spoken.
-8. `next_turn(direction)` closes the current turn while TTS is pending or
+8. `next_turn(lane_id)` closes the current turn while TTS is pending or
    playing; later playback results for that turn must not repopulate live state.
 9. `clear_turn` discards the current turn while TTS is pending or playing; later
    playback results for that turn must not repopulate live state.
 10. New ASR/translation content arrives after all visible target text was spoken.
-11. `next_turn(direction)` closes a spoken-idle current turn.
+11. `next_turn(lane_id)` closes a spoken-idle current turn.
 12. `clear_turn` discards a spoken-idle current turn.
 
 ## State-Derived Behavior
@@ -168,6 +168,10 @@ DISCARDED             ignored     ignored      disabled   disabled    disabled
 
 `paused` means the frontend should stop sending microphone audio. The backend
 still guards the state and rejects or ignores audio if it arrives.
+
+The backend accepts `clear_turn` in all open states. The visible Clear Turn
+button may stay disabled while both panels are empty, because clearing an empty
+turn has no user-visible effect.
 
 `guarded` means late ASR or translation events may still be accepted only if they
 belong to work that was already valid for the current turn before speaking

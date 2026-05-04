@@ -274,6 +274,19 @@ button {
   font-weight: 450;
 }
 
+.turn-part + .turn-part {
+  margin-top: 0.7rem;
+}
+
+.turn-part.is-spoken {
+  color: var(--muted);
+  opacity: 0.76;
+}
+
+.turn-part.is-speaking {
+  color: var(--text-strong);
+}
+
 .text-preview {
   color: #8b8f98;
   font-style: italic;

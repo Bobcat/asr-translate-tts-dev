@@ -41,13 +41,18 @@ const els = {
   setupStartPanel: document.querySelector('#setupStartPanel'),
   startButton: document.querySelector('#startButton'),
   actionDock: document.querySelector('#actionDock'),
-  sourceHeaderActions: document.querySelector('#sourceHeaderActions'),
+  turnHeaderActions: document.querySelector('#turnHeaderActions'),
   finishButton: document.querySelector('#finishButton'),
   exportButton: document.querySelector('#exportButton'),
   clearSessionButton: document.querySelector('#clearSessionButton'),
   miniStatus: document.querySelector('#miniStatus'),
   sourceLanguageSelect: document.querySelector('#sourceLanguageSelect'),
   targetLanguageSelect: document.querySelector('#targetLanguageSelect'),
+  setupSwapButton: document.querySelector('#setupSwapButton'),
+  setupSourceLanguage: document.querySelector('#setupSourceLanguage'),
+  setupTargetLanguage: document.querySelector('#setupTargetLanguage'),
+  turnSourceLanguage: document.querySelector('#turnSourceLanguage'),
+  turnTargetLanguage: document.querySelector('#turnTargetLanguage'),
   vadBadge: document.querySelector('#vadBadge'),
   sourcePaneMeta: document.querySelector('#sourcePaneMeta'),
   targetPaneMeta: document.querySelector('#targetPaneMeta'),
@@ -161,6 +166,7 @@ async function init() {
   els.turnModeButton.addEventListener('click', () => setViewMode('turn'));
   els.sourceLanguageSelect.addEventListener('change', () => setVisibleLanguage('source', els.sourceLanguageSelect.value));
   els.targetLanguageSelect.addEventListener('change', () => setVisibleLanguage('target', els.targetLanguageSelect.value));
+  els.setupSwapButton.addEventListener('click', swapSetupLanguages);
   els.swapButton.addEventListener('click', swapDirection);
   els.speakNowButton.addEventListener('click', speakNow);
   els.clearTurnButton.addEventListener('click', clearTurn);
@@ -480,13 +486,15 @@ function renderLifecycle() {
   els.setupStartPanel.hidden = !setup;
   els.sourceText.hidden = setup;
   els.actionDock.hidden = false;
-  els.sourceHeaderActions.hidden = !running;
+  els.turnHeaderActions.hidden = !running;
+  els.setupSwapButton.hidden = !setup;
   els.speakNowButton.hidden = !(running || finalizing);
   els.finishButton.hidden = !(running || finalizing);
   els.exportButton.hidden = !ended;
   els.clearSessionButton.hidden = !ended;
   els.miniStatus.hidden = !state.debugSettings.showStatusLine;
   els.startButton.disabled = state.status === 'connecting';
+  els.setupSwapButton.disabled = !setup || state.status === 'connecting';
   els.finishButton.disabled = finalizing;
   els.turnModeButton.classList.toggle('is-active', state.viewMode === 'turn');
   els.turnModeButton.setAttribute('aria-pressed', state.viewMode === 'turn' ? 'true' : 'false');
@@ -594,10 +602,15 @@ function setSettingsPage(page) {
 
 function renderSettingsPage() {
   const page = state.settingsPage;
+  const home = page === 'home';
   els.settingsHomePage.hidden = page !== 'home';
   els.settingsMicrophonePage.hidden = page !== 'microphone';
   els.settingsAudioPage.hidden = page !== 'audio';
   els.settingsDebugPage.hidden = page !== 'debug';
+  els.settingsBackButton.classList.toggle('is-sheet-close', home);
+  els.settingsBackButton.classList.toggle('is-subpage-back', !home);
+  els.settingsBackButton.setAttribute('aria-label', home ? 'Close settings' : 'Back');
+  els.settingsBackButton.title = home ? 'Close settings' : 'Back';
   if (page === 'microphone') {
     els.settingsSheetTitle.textContent = 'Microphone';
   } else if (page === 'audio') {
@@ -620,6 +633,19 @@ function setVisibleLanguage(role, value) {
   } else {
     state.sideALanguage = next;
   }
+  state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
+  state.currentTurn = createLocalTurn(currentLaneId(), state.lanes);
+  renderLanguageControls();
+  renderTranscript();
+  updateActionButtons();
+  els.miniStatus.textContent = directionLabel();
+}
+
+function swapSetupLanguages() {
+  if (state.sessionState !== SESSION_STATES.SETUP) return;
+  const previousSideA = state.sideALanguage;
+  state.sideALanguage = state.sideBLanguage;
+  state.sideBLanguage = previousSideA;
   state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
   state.currentTurn = createLocalTurn(currentLaneId(), state.lanes);
   renderLanguageControls();
@@ -726,6 +752,13 @@ function renderMicLevel(value) {
   els.micLevelFill.style.transform = `scaleX(${level.toFixed(3)})`;
   els.micLevel.setAttribute('aria-valuenow', String(percent));
   els.micLevel.classList.toggle('is-hot', level >= 0.9);
+  const haloLevel = Math.sqrt(level);
+  const clipRisk = level >= 0.95;
+  const hot = level >= 0.85;
+  els.finishButton.classList.toggle('is-clip-risk', clipRisk);
+  els.finishButton.style.setProperty('--finish-halo-color', clipRisk ? '185, 28, 28' : hot ? '245, 158, 11' : '239, 68, 68');
+  els.finishButton.style.setProperty('--finish-halo-alpha', (0.08 + haloLevel * (clipRisk ? 0.42 : hot ? 0.36 : 0.3)).toFixed(3));
+  els.finishButton.style.setProperty('--finish-halo-size', `${Math.round(haloLevel * 14)}px`);
 }
 
 function renderLanguageSelectOptions() {
@@ -757,6 +790,7 @@ function renderLanguageControls() {
   els.targetLanguageSelect.setAttribute('aria-label', `Target language: ${lane.targetLanguage}`);
   els.sourcePaneMeta.textContent = codeForLanguage(lane.sourceLanguage);
   els.targetPaneMeta.textContent = codeForLanguage(lane.targetLanguage);
+  renderDirectionLabels(lane);
 }
 
 function fitLanguageSelectToSelectedOption(select) {
@@ -785,8 +819,22 @@ function renderTranscript() {
   renderTurnStream(els.targetText, state.currentTurn.parts, 'target', state.currentTurn.targetText);
   els.sourcePaneMeta.textContent = codeForLanguage(lane.sourceLanguage);
   els.targetPaneMeta.textContent = codeForLanguage(lane.targetLanguage);
+  renderDirectionLabels(lane);
   pinToBottomIfFollowing(els.sourceText);
   pinToBottomIfFollowing(els.targetText);
+}
+
+function renderDirectionLabels(lane) {
+  const sourceCode = codeForLanguage(lane.sourceLanguage);
+  const targetCode = codeForLanguage(lane.targetLanguage);
+  els.turnSourceLanguage.textContent = sourceCode;
+  els.turnTargetLanguage.textContent = targetCode;
+  els.setupSourceLanguage.textContent = sourceCode;
+  els.setupTargetLanguage.textContent = targetCode;
+  els.turnSourceLanguage.title = lane.sourceLanguage;
+  els.turnTargetLanguage.title = lane.targetLanguage;
+  els.setupSourceLanguage.title = lane.sourceLanguage;
+  els.setupTargetLanguage.title = lane.targetLanguage;
 }
 
 function renderTurnStream(el, parts, role, fallbackText) {

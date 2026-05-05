@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 
 from app.config import get_str
 from app.router import api_router
@@ -14,6 +15,16 @@ base_dir = Path(__file__).parent.parent
 static_dir = base_dir / "static"
 
 root_path = get_str("service.root_path", "")
+
+
+class DevStaticFiles(StaticFiles):
+    def file_response(self, full_path: Path, stat_result, scope, status_code: int = 200) -> Response:
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
 
 app = FastAPI(
     title="ASR Translate TTS",
@@ -31,5 +42,4 @@ async def ws_session(websocket: WebSocket, session_id: str) -> None:
 
 
 if static_dir.exists():
-    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
-
+    app.mount("/", DevStaticFiles(directory=str(static_dir), html=True), name="static")

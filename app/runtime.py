@@ -797,35 +797,26 @@ class ConversationRuntime:
 
     async def _pause_listening(self) -> None:
         self.listening = False
-        SESSIONS.update(self.session_id, state="finalizing")
-        await self._send(event("state", self.session_id, state="finalizing"))
-        lane = self._current_lane()
-        lane.asr_runner.finalize_input()
-        await self._poll_asr_all()
-        await self._enqueue_asr(lane, force=True)
-        deadline = time.monotonic() + get_float("live.timing.drain_wait_s", 20.0, min_value=0.0)
-        while lane.asr_inflight is not None and time.monotonic() < deadline:
-            await self._poll_asr_all()
-            if lane.asr_inflight is None:
-                break
-            ready = self.asr_ready
-            timeout = min(0.1, max(0.0, deadline - time.monotonic()))
-            if ready is not None:
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(ready.wait(), timeout=timeout)
-                    ready.clear()
-            else:
-                await asyncio.sleep(timeout)
-        await self._commit_preview_tail(lane)
-        tasks = [lane.translation_task for lane in self.lanes.values() if lane.translation_task is not None and not lane.translation_task.done()]
-        if tasks:
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(asyncio.gather(*tasks), timeout=30.0)
+        await self._discard_runtime_work()
         SESSIONS.update(self.session_id, state="completed")
         await self._send(event("ended", self.session_id, reason="pause_listening"))
         with contextlib.suppress(Exception):
             await self.websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
         self.closed = True
+
+    async def _discard_runtime_work(self) -> None:
+        for lane in self.lanes.values():
+            inflight = lane.asr_inflight
+            if inflight is not None:
+                sequence_id = self._sequence_from_request(inflight.job.request_id)
+                lane.asr_runner.clear_inflight_work(sequence_id=sequence_id)
+                self.asr_bridge.discard_request(inflight.job.request_id)
+                lane.asr_inflight = None
+            await _cancel_task(lane.translation_task)
+            await _cancel_task(lane.tts_task)
+            lane.translation_task = None
+            lane.tts_task = None
+            lane.pending_tts = None
 
     async def _cleanup(self) -> None:
         self.closed = True

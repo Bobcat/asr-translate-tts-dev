@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ASR Translate TTS</title>
-    <link rel="stylesheet" href="/styles.css?v=20260506-inline-mic-start">
+    <link rel="stylesheet" href="/styles.css?v=20260506-target-label">
   </head>
   <body>
     <main class="app is-setup">
@@ -63,7 +63,7 @@
         </article>
         <article class="pane target-pane">
           <div class="pane-header">
-            <h1>What will be spoken</h1>
+            <h1>Translation</h1>
             <div class="pane-indicators">
               <select class="language-select pane-language-select" id="targetLanguageSelect" aria-label="Choose target language"></select>
             </div>
@@ -98,8 +98,6 @@
           </svg>
           <span class="session-right-label" id="sessionRightLabel">Finish</span>
         </button>
-        <button class="secondary-action dock-action export-action" id="exportButton" type="button" hidden>Export</button>
-        <button class="secondary-action dock-action session-clear-action" id="clearSessionButton" type="button" hidden>Clear</button>
         <div class="mini-status" id="miniStatus" hidden></div>
       </footer>
       <button class="hidden-playback-button" id="audioResumeButton" type="button" hidden>Play audio</button>
@@ -135,6 +133,13 @@
                   <small>Speech output status</small>
                 </span>
                 <span class="setting-value" id="ttsOutputState">off</span>
+              </button>
+              <button class="settings-nav-row" id="settingsHistoryNav" type="button">
+                <span>
+                  <strong>History</strong>
+                  <small>Saved sessions</small>
+                </span>
+                <span class="setting-value" id="historySettingsSummary">off</span>
               </button>
               <button class="settings-nav-row" id="settingsDebugNav" type="button">
                 <span>
@@ -179,6 +184,21 @@
               </section>
             </div>
 
+            <div class="settings-page" id="settingsHistoryPage" hidden>
+              <section class="setting-group" aria-label="History">
+                <label class="toggle-row" for="historySaveSessions">
+                  <input id="historySaveSessions" type="checkbox" disabled>
+                  <span>Save sessions</span>
+                </label>
+                <label class="select-row" for="historyRetentionDays">
+                  <span>Delete after</span>
+                  <select id="historyRetentionDays" disabled>
+                    <option value="7">7 days</option>
+                  </select>
+                </label>
+              </section>
+            </div>
+
             <div class="settings-page" id="settingsDebugPage" hidden>
               <section class="setting-group" aria-label="Debug">
                 <label class="toggle-row" for="showStatusLine">
@@ -191,6 +211,6 @@
         </section>
       </div>
     </main>
-    <script type="module" src="/src/app.js?v=20260506-inline-mic-start"></script>
+    <script type="module" src="/src/app.js?v=20260506-target-label"></script>
   </body>
 </html>

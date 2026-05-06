@@ -13,7 +13,6 @@
       "channels": 1
     },
     "timing": {
-      "drain_wait_s": 20.0,
       "emit_min_ms": 120
     },
     "asr": {

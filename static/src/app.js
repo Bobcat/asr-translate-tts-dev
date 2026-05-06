@@ -13,8 +13,6 @@ const TURN_STATES = {
 const SESSION_STATES = {
   SETUP: 'setup',
   RUNNING: 'running',
-  FINALIZING: 'finalizing',
-  ENDED: 'ended',
 };
 const MIC_STATES = {
   LISTENING: 'listening',
@@ -46,8 +44,6 @@ const els = {
   startButton: document.querySelector('#startButton'),
   turnHeaderActions: document.querySelector('#turnHeaderActions'),
   finishButton: document.querySelector('#finishButton'),
-  exportButton: document.querySelector('#exportButton'),
-  clearSessionButton: document.querySelector('#clearSessionButton'),
   miniStatus: document.querySelector('#miniStatus'),
   sourceLanguageSelect: document.querySelector('#sourceLanguageSelect'),
   targetLanguageSelect: document.querySelector('#targetLanguageSelect'),
@@ -73,10 +69,15 @@ const els = {
   settingsHomePage: document.querySelector('#settingsHomePage'),
   settingsMicrophoneNav: document.querySelector('#settingsMicrophoneNav'),
   settingsAudioNav: document.querySelector('#settingsAudioNav'),
+  settingsHistoryNav: document.querySelector('#settingsHistoryNav'),
   settingsDebugNav: document.querySelector('#settingsDebugNav'),
   settingsMicrophonePage: document.querySelector('#settingsMicrophonePage'),
   settingsAudioPage: document.querySelector('#settingsAudioPage'),
+  settingsHistoryPage: document.querySelector('#settingsHistoryPage'),
   settingsDebugPage: document.querySelector('#settingsDebugPage'),
+  historySettingsSummary: document.querySelector('#historySettingsSummary'),
+  historySaveSessions: document.querySelector('#historySaveSessions'),
+  historyRetentionDays: document.querySelector('#historyRetentionDays'),
   debugSettingsSummary: document.querySelector('#debugSettingsSummary'),
   showStatusLine: document.querySelector('#showStatusLine'),
   settingsStartButton: document.querySelector('#settingsStartButton'),
@@ -95,6 +96,7 @@ const initialLanes = buildLocalLanes('Dutch', 'English');
 
 const state = {
   socket: null,
+  sessionId: null,
   capture: null,
   sideALanguage: 'Dutch',
   sideBLanguage: 'English',
@@ -167,12 +169,11 @@ async function init() {
   state.sideALanguage = normalizeLanguageName(config.conversation?.side_a_language || 'Dutch');
   state.sideBLanguage = normalizeLanguageName(config.conversation?.side_b_language || 'English');
   state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
+  state.audioInputSampleRate = config.audio_input?.sample_rate_hz || 16000;
   renderTtsOutputState(config.tts);
 
   els.startButton.addEventListener('click', handleStartButton);
   els.finishButton.addEventListener('click', handleSessionRightAction);
-  els.exportButton.addEventListener('click', exportEndedSession);
-  els.clearSessionButton.addEventListener('click', clearEndedSession);
   els.turnModeButton.addEventListener('click', () => setViewMode('turn'));
   els.sourceLanguageSelect.addEventListener('change', () => setVisibleLanguage('source', els.sourceLanguageSelect.value));
   els.targetLanguageSelect.addEventListener('change', () => setVisibleLanguage('target', els.targetLanguageSelect.value));
@@ -184,6 +185,7 @@ async function init() {
   els.settingsBackButton.addEventListener('click', handleSettingsBack);
   els.settingsMicrophoneNav.addEventListener('click', () => setSettingsPage('microphone'));
   els.settingsAudioNav.addEventListener('click', () => setSettingsPage('audio'));
+  els.settingsHistoryNav.addEventListener('click', () => setSettingsPage('history'));
   els.settingsDebugNav.addEventListener('click', () => setSettingsPage('debug'));
   els.settingsStartButton.addEventListener('click', startFromSettings);
   els.micPreGain.addEventListener('input', handlePreGainInput);
@@ -202,6 +204,7 @@ async function init() {
   setupAutoFollow(els.targetText);
   renderTranscript();
   renderAudioSettings();
+  renderHistorySettings();
   renderDebugSettings();
   updateActionButtons();
   renderLifecycle();
@@ -215,28 +218,38 @@ async function startListening({ statusDetail = 'Opening connection' } = {}) {
   state.micState = MIC_STATES.OFF;
   setListenBusy(true);
   setStatus('connecting', statusDetail);
+  let socket = null;
+  let capture = null;
   try {
+    const capturePromise = createStartedAudioCapture({ targetSampleRate: state.audioInputSampleRate });
     const session = await api.createSession({
       sideALanguage: state.sideALanguage,
       sideBLanguage: state.sideBLanguage,
     });
-    const socket = new SessionSocket(
+    const sessionId = String(session.session?.session_id || session.session_id || '').trim();
+    if (!sessionId) throw new Error('Missing session id');
+    state.sessionId = sessionId;
+    socket = new SessionSocket(
       session.ws_url,
       handleMessage,
       () => {
         if (state.socket !== socket) return;
-        if (state.sessionState === SESSION_STATES.FINALIZING) return;
         state.captureMutedForPlayback = false;
+        state.sessionId = null;
         renderAudioSettings();
         setSessionState(SESSION_STATES.SETUP);
         setStatus('idle', '');
       },
     );
-    await socket.connect();
+    await Promise.all([
+      socket.connect(),
+      capturePromise.then((startedCapture) => {
+        capture = startedCapture;
+      }),
+    ]);
     state.socket = socket;
     state.audioInputSampleRate = session.audio_input?.sample_rate_hz || 16000;
-    state.capture = createAudioCapture({ targetSampleRate: state.audioInputSampleRate });
-    await state.capture.start();
+    state.capture = capture;
     state.audioSettings.autoGainControl = state.capture.autoGainControl;
     state.socket.startListening();
     state.micState = MIC_STATES.LISTENING;
@@ -245,7 +258,10 @@ async function startListening({ statusDetail = 'Opening connection' } = {}) {
     setStatus('listening', '');
   } catch (error) {
     state.captureMutedForPlayback = false;
+    capture?.stop();
+    socket?.close();
     cleanupClientSession();
+    state.sessionId = null;
     setSessionState(SESSION_STATES.SETUP);
     setStatus('error', error.message || String(error));
   } finally {
@@ -277,9 +293,16 @@ function finishSession() {
   if (state.sessionState !== SESSION_STATES.RUNNING) return;
   if (!state.socket?.isOpen()) {
     cleanupClientSession();
+    state.sessionId = null;
     setSessionState(SESSION_STATES.SETUP);
     return;
   }
+  const finishingSocket = state.socket;
+  finishingSocket.finishListening();
+  if (state.socket === finishingSocket) {
+    state.socket = null;
+  }
+  state.sessionId = null;
   state.captureMutedForPlayback = false;
   state.capture?.stop();
   state.capture = null;
@@ -287,9 +310,7 @@ function finishSession() {
   hideVadHint();
   renderMicLevel(0);
   renderAudioSettings();
-  state.socket.finishListening();
-  setSessionState(SESSION_STATES.FINALIZING);
-  setStatus('finalizing', 'Finalizing');
+  resetSessionToSetup();
 }
 
 async function startMicrophoneCapture() {
@@ -351,32 +372,12 @@ function clearTurn() {
   }
 }
 
-function clearEndedSession() {
-  if (state.sessionState !== SESSION_STATES.ENDED) return;
+function resetSessionToSetup() {
   clearAllLanes({ laneId: 'a_to_b' });
   state.requestedStartLaneId = 'a_to_b';
   state.captureMutedForPlayback = false;
   setSessionState(SESSION_STATES.SETUP);
   setStatus('idle', '');
-}
-
-function exportEndedSession() {
-  if (state.sessionState !== SESSION_STATES.ENDED) return;
-  if (!hasVisibleTurnText()) {
-    els.miniStatus.textContent = 'Nothing to export';
-    return;
-  }
-  const content = buildVisibleTurnExport();
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `asr-translate-tts-${exportTimestamp()}.txt`;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-  els.miniStatus.textContent = 'Exported';
 }
 
 function shouldSendMicrophoneAudio() {
@@ -399,6 +400,17 @@ function createAudioCapture({ targetSampleRate = 16000 } = {}) {
   });
 }
 
+async function createStartedAudioCapture({ targetSampleRate = 16000 } = {}) {
+  const capture = createAudioCapture({ targetSampleRate });
+  try {
+    await capture.start();
+    return capture;
+  } catch (error) {
+    capture.stop();
+    throw error;
+  }
+}
+
 function swapDirection() {
   if (state.sessionState !== SESSION_STATES.RUNNING) return;
   const nextLaneId = currentLaneId() === 'a_to_b' ? 'b_to_a' : 'a_to_b';
@@ -409,6 +421,8 @@ function swapDirection() {
 }
 
 function handleMessage(msg) {
+  const msgSessionId = String(msg?.session_id || '').trim();
+  if (!state.sessionId || msgSessionId !== state.sessionId) return;
   if (msg.type === 'ready') {
     applyReady(msg);
     return;
@@ -458,9 +472,8 @@ function handleMessage(msg) {
     state.captureMutedForPlayback = false;
     hideVadHint();
     cleanupClientSession({ keepSocket: false });
-    setSessionState(SESSION_STATES.ENDED);
-    setStatus('ended', audioQueue.statusText());
-    updateActionButtons();
+    state.sessionId = null;
+    resetSessionToSetup();
   }
 }
 
@@ -531,6 +544,7 @@ function cleanupClientSession({ keepSocket = false } = {}) {
   if (!keepSocket) {
     state.socket?.close();
     state.socket = null;
+    state.sessionId = null;
   }
 }
 
@@ -565,27 +579,20 @@ function renderLifecycle() {
   const micOff = running && state.micState === MIC_STATES.OFF;
   const micOffWithSourceText = micOff && hasSourceText();
   const micListening = running && state.micState === MIC_STATES.LISTENING;
-  const finalizing = state.sessionState === SESSION_STATES.FINALIZING;
-  const ended = state.sessionState === SESSION_STATES.ENDED;
   els.app.classList.toggle('is-setup', setup);
   els.app.classList.toggle('is-running', running);
   els.app.classList.toggle('is-mic-off', micOff);
   els.app.classList.toggle('is-mic-listening', micListening);
-  els.app.classList.toggle('is-finalizing', finalizing);
-  els.app.classList.toggle('is-ended', ended);
   els.setupStartPanel.hidden = !(setup || (micOff && !micOffWithSourceText));
   els.sourceText.hidden = setup;
   els.turnHeaderActions.hidden = !running;
   els.setupSwapButton.hidden = !setup;
-  els.speakNowButton.hidden = !(running || finalizing);
-  els.finishButton.hidden = !(running || finalizing);
-  els.exportButton.hidden = !ended;
-  els.clearSessionButton.hidden = !ended;
+  els.speakNowButton.hidden = !running;
+  els.finishButton.hidden = !running;
   els.miniStatus.hidden = !state.debugSettings.showStatusLine;
   els.startButton.disabled = state.status === 'connecting';
   els.settingsStartButton.disabled = !(setup || micOff) || state.status === 'connecting';
   els.setupSwapButton.disabled = !setup || state.status === 'connecting';
-  els.finishButton.disabled = finalizing;
   els.turnModeButton.classList.toggle('is-active', state.viewMode === 'turn');
   els.turnModeButton.setAttribute('aria-pressed', state.viewMode === 'turn' ? 'true' : 'false');
   els.conversationModeButton.classList.toggle('is-active', state.viewMode === 'conversation');
@@ -609,14 +616,11 @@ function updateActionButtons() {
 function updateSpeakNowButton() {
   const turnIsSpeaking = state.currentTurn.state === TURN_STATES.OPEN_SPEAKING;
   const live = state.sessionState === SESSION_STATES.RUNNING && state.socket?.isOpen();
-  const finalizing = state.sessionState === SESSION_STATES.FINALIZING;
   const canSpeakTarget = Boolean(live && state.currentTurn.speakableTargetText && !turnIsSpeaking);
   const canPlayAudio = Boolean(live && audioQueue?.hasAudio());
-  els.speakNowButton.disabled = !(canSpeakTarget || canPlayAudio) || finalizing;
-  els.speakNowButton.classList.toggle('is-busy', finalizing || turnIsSpeaking);
-  if (finalizing) {
-    els.speakNowButton.textContent = 'Finalizing...';
-  } else if (state.audioStatus.startsWith('Playing')) {
+  els.speakNowButton.disabled = !(canSpeakTarget || canPlayAudio);
+  els.speakNowButton.classList.toggle('is-busy', turnIsSpeaking);
+  if (state.audioStatus.startsWith('Playing')) {
     els.speakNowButton.textContent = 'Playing...';
   } else if (canPlayAudio) {
     els.speakNowButton.textContent = 'Play audio';
@@ -628,16 +632,14 @@ function updateSpeakNowButton() {
 function updateClearTurnButton() {
   const hasText = Boolean(state.currentTurn.sourceText || state.currentTurn.targetText || state.currentTurn.parts.length);
   const live = state.sessionState === SESSION_STATES.RUNNING && state.socket?.isOpen();
-  const finalizing = state.sessionState === SESSION_STATES.FINALIZING;
-  els.clearTurnButton.disabled = finalizing || !hasText || !live;
-  els.swapButton.disabled = finalizing || !live;
+  els.clearTurnButton.disabled = !hasText || !live;
+  els.swapButton.disabled = !live;
 }
 
 function updateSessionRightAction() {
   const live = state.sessionState === SESSION_STATES.RUNNING && state.socket?.isOpen();
-  const finalizing = state.sessionState === SESSION_STATES.FINALIZING;
   const micListening = state.micState === MIC_STATES.LISTENING;
-  els.finishButton.disabled = finalizing || !live;
+  els.finishButton.disabled = !live;
   els.finishButton.classList.toggle('is-mic-off-action', micListening);
   els.finishButton.classList.toggle('is-finish-action', !micListening);
   els.sessionRightLabel.textContent = micListening ? 'Mic off' : 'Finish';
@@ -666,19 +668,15 @@ function renderStatus(status) {
   if (normalized === 'connecting') els.sessionStatusPill.classList.add('is-connecting');
   if (normalized === 'listening' && !micOff) els.sessionStatusPill.classList.add('is-listening');
   if (micOff) els.sessionStatusPill.classList.add('is-mic-off');
-  if (normalized === 'finalizing') els.sessionStatusPill.classList.add('is-finalizing');
   if (normalized === 'speaking') els.sessionStatusPill.classList.add('is-speaking');
   if (normalized === 'error') els.sessionStatusPill.classList.add('is-error');
-  if (state.sessionState === SESSION_STATES.ENDED) els.sessionStatusPill.classList.add('is-ended');
   els.sessionStatusPill.textContent = statusLabel(normalized);
 }
 
 function statusLabel(status) {
   const normalized = String(status || 'idle').toLowerCase();
-  if (state.sessionState === SESSION_STATES.ENDED) return 'Finished';
   if (state.sessionState === SESSION_STATES.RUNNING && state.micState === MIC_STATES.OFF && normalized !== 'speaking' && normalized !== 'error') return 'Mic off';
   if (normalized === 'listening') return 'Listening...';
-  if (normalized === 'finalizing') return 'Processing...';
   if (normalized === 'connecting') return 'Connecting...';
   if (normalized === 'speaking') return 'Playing...';
   if (normalized === 'error') return 'Error';
@@ -688,6 +686,7 @@ function statusLabel(status) {
 function openSettingsSheet() {
   setSettingsPage('home');
   renderAudioSettings();
+  renderHistorySettings();
   renderDebugSettings();
   els.settingsSheet.hidden = false;
 }
@@ -705,7 +704,7 @@ function handleSettingsBack() {
 }
 
 function setSettingsPage(page) {
-  state.settingsPage = page === 'microphone' || page === 'audio' || page === 'debug' ? page : 'home';
+  state.settingsPage = page === 'microphone' || page === 'audio' || page === 'history' || page === 'debug' ? page : 'home';
   renderSettingsPage();
 }
 
@@ -715,6 +714,7 @@ function renderSettingsPage() {
   els.settingsHomePage.hidden = page !== 'home';
   els.settingsMicrophonePage.hidden = page !== 'microphone';
   els.settingsAudioPage.hidden = page !== 'audio';
+  els.settingsHistoryPage.hidden = page !== 'history';
   els.settingsDebugPage.hidden = page !== 'debug';
   els.settingsBackButton.classList.toggle('is-sheet-close', home);
   els.settingsBackButton.classList.toggle('is-subpage-back', !home);
@@ -724,6 +724,8 @@ function renderSettingsPage() {
     els.settingsSheetTitle.textContent = 'Microphone';
   } else if (page === 'audio') {
     els.settingsSheetTitle.textContent = 'Audio output';
+  } else if (page === 'history') {
+    els.settingsSheetTitle.textContent = 'History';
   } else if (page === 'debug') {
     els.settingsSheetTitle.textContent = 'Debug';
   } else {
@@ -873,6 +875,14 @@ function handleShowStatusLineChange() {
 function renderDebugSettings() {
   els.showStatusLine.checked = state.debugSettings.showStatusLine;
   els.debugSettingsSummary.textContent = state.debugSettings.showStatusLine ? 'on' : 'off';
+}
+
+function renderHistorySettings() {
+  els.historySettingsSummary.textContent = 'off';
+  els.historySaveSessions.checked = false;
+  els.historySaveSessions.disabled = true;
+  els.historyRetentionDays.value = '7';
+  els.historyRetentionDays.disabled = true;
 }
 
 function renderTtsOutputState(tts) {
@@ -1054,6 +1064,12 @@ function renderTurnStream(el, parts, role, fallbackText) {
     row.textContent = String(fallbackText || '');
     fragment.append(row);
   }
+  if (!fragment.childNodes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = String(el.dataset.empty || '');
+    fragment.append(empty);
+  }
   el.replaceChildren(fragment);
 }
 
@@ -1211,35 +1227,8 @@ function directionLabel() {
   return `${codeForLanguage(lane.sourceLanguage)} -> ${codeForLanguage(lane.targetLanguage)}`;
 }
 
-function buildVisibleTurnExport() {
-  const lane = currentLane();
-  const sourceText = state.currentTurn.sourceText || joinPartText(state.currentTurn.parts, 'source');
-  const targetText = state.currentTurn.targetText || joinPartText(state.currentTurn.parts, 'target');
-  return [
-    `Source (${codeForLanguage(lane.sourceLanguage)})`,
-    sourceText,
-    '',
-    `Translation (${codeForLanguage(lane.targetLanguage)})`,
-    targetText,
-    '',
-  ].join('\n');
-}
-
-function hasVisibleTurnText() {
-  return Boolean(
-    state.currentTurn.sourceText
-    || state.currentTurn.targetText
-    || joinPartText(state.currentTurn.parts, 'source')
-    || joinPartText(state.currentTurn.parts, 'target'),
-  );
-}
-
 function hasSourceText() {
   return Boolean(state.currentTurn.sourceText || joinPartText(state.currentTurn.parts, 'source'));
-}
-
-function exportTimestamp() {
-  return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
 function normalizePreGain(value) {

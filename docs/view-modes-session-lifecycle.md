@@ -29,7 +29,7 @@ SETUP --Start--> RUNNING/listening
 RUNNING/listening --Mic off--> RUNNING/mic_off
 RUNNING/mic_off --Start mic--> RUNNING/listening
 RUNNING/mic_off --Finish--> FINALIZING --> ENDED
-ENDED --Clear--> SETUP
+ENDED --Reset--> SETUP
 ```
 
 `RUNNING` means the conversation session and websocket are open. Microphone
@@ -149,8 +149,8 @@ same speaker continues.
 
 ## ENDED
 
-In `ENDED`, the session is closed. The transcript remains visible for review and
-export. Live controls are gone.
+In `ENDED`, the session is closed. The transcript remains visible for review.
+Live controls are gone.
 
 ```text
 +------------------------------------------------+
@@ -162,12 +162,25 @@ export. Live controls are gone.
 | What will be spoken                            |
 | ... ended translation ...                      |
 +------------------------------------------------+
-| [settings]                  [ Export ] [Clear] |
+| [settings]                            [Reset] |
 +------------------------------------------------+
 ```
 
-`Export` creates an external artifact, for example text, markdown, JSON, or
-another file format. There is no separate `Save` action in the current scope.
-
-`Clear` removes the ended session from the UI and returns to `SETUP`. It should
+`Reset` removes the ended session from the UI and returns to `SETUP`. It should
 be visually dangerous but quieter than `Finish`.
+
+## History Settings
+
+`Settings > History` is the future home for local session history. The current
+UI may show the disabled setting shape before persistence is implemented:
+
+```text
+History
+  Save sessions    Off
+  Delete after     7 days
+```
+
+The saved-session data structure is intentionally not defined in this note.
+Once it is defined, browser persistence should use IndexedDB. Retention can be
+enforced when the frontend runs; a web app cannot delete old local data while it
+is never opened.

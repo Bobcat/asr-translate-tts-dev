@@ -109,8 +109,8 @@ reset_turn
   -> do not reset the translation runner
 ```
 
-Later export should be based on app-level kept turn history, not on raw runner
-state. Cleared turn content is not exported.
+Later local session history should be based on app-level kept turn history, not
+on raw runner state. Cleared turn content is not saved in local session history.
 
 During local TTS playback, the frontend pauses or mutes microphone capture and
 sends no microphone audio to the backend. Capture resumes after playback ends,
@@ -134,7 +134,7 @@ when the user switches turns while an ASR request is still running.
 
 The app runtime owns kept turn history. The ASR and translation runners provide
 live processing state; they are not the source of truth for which turn fragments
-are kept, cleared, spoken, or exported.
+are kept, cleared, spoken, or saved in local session history.
 
 Async ASR, translation, and TTS results belong to the lane and current turn for
 which they were created. If that turn is no longer current, the app runtime must

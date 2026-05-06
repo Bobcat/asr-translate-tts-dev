@@ -5,14 +5,14 @@
 - This repository contains the ASR -> Translate -> TTS app backend and frontend.
 - Keep changes scoped to this repo unless the task explicitly names another repo.
 - Do not change ASR, translation, or TTS component/service repos from here unless explicitly requested.
-- This app is the owner of app-level UX state, turn handling, export decisions, and visible workflow behavior.
+- This app is the owner of app-level UX state, turn handling, local history decisions, and visible workflow behavior.
 
 ## Architecture Rules
 
 - The frontend is the controlling surface for reachable backend code paths.
 - Do not add fallback, compatibility, or "just in case" paths unless explicitly requested.
 - Do not leave obsolete UX or protocol paths in place after replacing them.
-- Keep app state in the app layer. Do not push app reset/export/turn UX responsibilities into runner/package state.
+- Keep app state in the app layer. Do not push app reset/local-history/turn UX responsibilities into runner/package state.
 - Treat the MVP as turn-based: explicit user actions, active lane, clear turn, speak now, finish.
 - Backend changes should map directly to current frontend-reachable behavior.
 

@@ -16,8 +16,6 @@
   --success-text: #166534;
   --success-accent: #22c55e;
   --asr-source-bg: #f8fdfa;
-  --finished-bg: #e0e7ff;
-  --finished-text: #3730a3;
   --shadow: 0 18px 36px rgba(15, 23, 42, 0.15);
   --radius: 8px;
   --dialog-radius: 16px;
@@ -236,16 +234,10 @@ button {
   background: var(--surface-soft);
 }
 
-.session-status-pill.is-finalizing,
 .session-status-pill.is-speaking,
 .session-status-pill.is-connecting {
   color: var(--warning);
   background: #fef9c3;
-}
-
-.session-status-pill.is-ended {
-  color: var(--finished-text);
-  background: var(--finished-bg);
 }
 
 .session-status-pill.is-error {
@@ -305,8 +297,8 @@ button {
   background: var(--surface);
 }
 
-.app.is-setup .target-pane .text-stream:empty::before {
-  content: "";
+.app.is-setup .target-pane .empty-state {
+  display: none;
 }
 
 .pane {
@@ -534,6 +526,17 @@ button {
   display: none;
 }
 
+.app.is-running.is-mic-off .setup-start-panel {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.app.is-running.is-mic-off .setup-start-button {
+  pointer-events: auto;
+}
+
 .setup-start-button {
   width: 64px;
   height: 64px;
@@ -587,10 +590,9 @@ button {
   scrollbar-gutter: stable;
 }
 
-.text-stream:empty::before {
-  content: attr(data-empty);
-  color: var(--muted);
-  font-style: italic;
+.empty-state {
+  color: #b8c0cc;
+  font-style: normal;
   font-weight: 400;
 }
 
@@ -658,10 +660,6 @@ button {
   font-size: 0.9rem;
 }
 
-.app.is-ended .action-dock {
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-}
-
 .dock-action[hidden],
 .setup-switch-action[hidden] {
   display: none;
@@ -682,16 +680,6 @@ button {
 
 #finishButton {
   grid-column: 3;
-  justify-self: end;
-}
-
-#exportButton {
-  grid-column: 3;
-  justify-self: end;
-}
-
-#clearSessionButton {
-  grid-column: 4;
   justify-self: end;
 }
 
@@ -831,26 +819,6 @@ button {
 .session-right-action:disabled {
   cursor: default;
   opacity: 0.48;
-}
-
-.export-action {
-  color: var(--text);
-  border: 0;
-  background: var(--surface);
-}
-
-.export-action:hover {
-  background: var(--surface-soft);
-}
-
-.session-clear-action {
-  color: var(--danger);
-  border: 0;
-  background: #fef2f2;
-}
-
-.session-clear-action:hover {
-  background: #fee2e2;
 }
 
 .mini-status {
@@ -1112,6 +1080,27 @@ button {
   margin: 0;
 }
 
+.setting-group .select-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.select-row select {
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+}
+
 .audio-reset-button,
 .settings-start-button {
   min-height: 38px;
@@ -1179,16 +1168,6 @@ button {
 @media (max-width: 720px) {
   .app.is-setup .setup-start-panel {
     padding: 14px;
-  }
-
-  .app.is-setup .setup-start-button {
-    width: 52px;
-    height: 52px;
-  }
-
-  .app.is-setup .setup-start-icon {
-    width: 24px;
-    height: 24px;
   }
 }
 

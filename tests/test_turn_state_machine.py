@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import time
 import unittest
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 from app.runtime import ConversationRuntime
 from app.runtime import TurnPart
@@ -12,9 +14,13 @@ from app.sessions import ConversationSession
 class FakeWebSocket:
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.closed_code: int | None = None
 
     async def send_json(self, payload: dict) -> None:
         self.sent.append(payload)
+
+    async def close(self, *, code: int, reason: str = "") -> None:
+        self.closed_code = code
 
 
 class FastTTS:
@@ -182,6 +188,28 @@ class TurnStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runtime.closed_turns), 1)
         self.assertIsNone(runtime.lanes["a_to_b"].pending_tts)
         self.assertFalse(any(event["type"] == "tts_clip_ready" for event in websocket.sent))
+
+    async def test_finish_closes_without_forced_asr_or_translation_drain(self) -> None:
+        runtime, websocket = self.make_runtime(FastTTS())
+        lane = runtime._current_lane()
+        lane.translation_task = asyncio.create_task(asyncio.sleep(60))
+        runtime.listening = True
+
+        with (
+            patch("app.runtime.SESSIONS.update", return_value={}),
+            patch.object(runtime, "_poll_asr_all", new_callable=AsyncMock) as poll_asr,
+            patch.object(runtime, "_enqueue_asr", new_callable=AsyncMock) as enqueue_asr,
+            patch.object(runtime, "_commit_preview_tail", new_callable=AsyncMock) as commit_tail,
+        ):
+            await runtime._pause_listening()
+
+        poll_asr.assert_not_awaited()
+        enqueue_asr.assert_not_awaited()
+        commit_tail.assert_not_awaited()
+        self.assertFalse(runtime.listening)
+        self.assertIsNone(lane.translation_task)
+        self.assertTrue(any(event["type"] == "ended" for event in websocket.sent))
+        self.assertIsNotNone(websocket.closed_code)
 
 
 if __name__ == "__main__":

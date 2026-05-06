@@ -37,7 +37,7 @@ lane
 
 The ASR and translation runners may keep their own internal state. The visible
 source text, visible target text, spoken markers, playback state, and later
-export decisions are owned by app-level turn state.
+local history decisions are owned by app-level turn state.
 
 ## Turn Part UI
 

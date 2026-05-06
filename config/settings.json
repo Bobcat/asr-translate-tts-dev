@@ -63,7 +63,9 @@
     }
   },
   "translation": {
-    "model": "google_gemma-4-E2B-it-Q5_K_M-gguf",
+    "model": "translategemma-12b-it-q5-k-m-gguf",
+    "_model": "translategemma-4b-it-q5-k-m-gguf",
+    "request_format": "translategemma_template",
     "second_pass_model": "",
     "source_language": "Dutch",
     "target_language": "English",

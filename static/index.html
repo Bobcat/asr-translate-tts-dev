@@ -46,7 +46,6 @@
             <div class="pane-indicators">
               <span class="vad-badge" id="vadBadge" hidden>Speech detected</span>
               <select class="language-select pane-language-select" id="sourceLanguageSelect" aria-label="Choose source language"></select>
-              <span class="pane-meta" id="sourcePaneMeta" hidden>NL</span>
             </div>
           </div>
           <div class="pane-body">
@@ -67,14 +66,13 @@
             <h1>What will be spoken</h1>
             <div class="pane-indicators">
               <select class="language-select pane-language-select" id="targetLanguageSelect" aria-label="Choose target language"></select>
-              <span class="pane-meta" id="targetPaneMeta" hidden>EN</span>
             </div>
           </div>
           <div class="text-stream" id="targetText" data-empty="No translation yet"></div>
         </article>
       </section>
 
-      <footer class="action-dock" id="actionDock">
+      <footer class="action-dock">
         <button class="settings-button dock-icon-button" id="settingsButton" type="button" aria-label="Open settings" title="Settings">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"></path>
@@ -107,7 +105,7 @@
       <div class="sheet-layer" id="settingsSheet" hidden>
         <button class="sheet-scrim" id="settingsSheetScrim" type="button" aria-label="Close"></button>
         <section class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="settingsSheetTitle">
-          <header class="sheet-header settings-sheet-header">
+          <header class="sheet-header">
             <button class="settings-back is-sheet-close" id="settingsBackButton" type="button" aria-label="Close settings" title="Close settings">
               <svg class="settings-back-icon settings-back-down-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M6 9l6 6 6-6"></path>

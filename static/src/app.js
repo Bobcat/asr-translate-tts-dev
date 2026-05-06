@@ -40,7 +40,6 @@ const els = {
   conversationModeButton: document.querySelector('#conversationModeButton'),
   setupStartPanel: document.querySelector('#setupStartPanel'),
   startButton: document.querySelector('#startButton'),
-  actionDock: document.querySelector('#actionDock'),
   turnHeaderActions: document.querySelector('#turnHeaderActions'),
   finishButton: document.querySelector('#finishButton'),
   exportButton: document.querySelector('#exportButton'),
@@ -54,8 +53,6 @@ const els = {
   turnSourceLanguage: document.querySelector('#turnSourceLanguage'),
   turnTargetLanguage: document.querySelector('#turnTargetLanguage'),
   vadBadge: document.querySelector('#vadBadge'),
-  sourcePaneMeta: document.querySelector('#sourcePaneMeta'),
-  targetPaneMeta: document.querySelector('#targetPaneMeta'),
   settingsButton: document.querySelector('#settingsButton'),
   sourceText: document.querySelector('#sourceText'),
   targetText: document.querySelector('#targetText'),
@@ -485,7 +482,6 @@ function renderLifecycle() {
   els.app.classList.toggle('is-ended', ended);
   els.setupStartPanel.hidden = !setup;
   els.sourceText.hidden = setup;
-  els.actionDock.hidden = false;
   els.turnHeaderActions.hidden = !running;
   els.setupSwapButton.hidden = !setup;
   els.speakNowButton.hidden = !(running || finalizing);
@@ -782,14 +778,10 @@ function renderLanguageControls() {
   fitLanguageSelectToSelectedOption(els.targetLanguageSelect);
   els.sourceLanguageSelect.hidden = !setup;
   els.targetLanguageSelect.hidden = !setup;
-  els.sourcePaneMeta.hidden = true;
-  els.targetPaneMeta.hidden = true;
   els.sourceLanguageSelect.disabled = state.status === 'connecting';
   els.targetLanguageSelect.disabled = state.status === 'connecting';
   els.sourceLanguageSelect.setAttribute('aria-label', `Source language: ${lane.sourceLanguage}`);
   els.targetLanguageSelect.setAttribute('aria-label', `Target language: ${lane.targetLanguage}`);
-  els.sourcePaneMeta.textContent = codeForLanguage(lane.sourceLanguage);
-  els.targetPaneMeta.textContent = codeForLanguage(lane.targetLanguage);
   renderDirectionLabels(lane);
 }
 
@@ -817,8 +809,6 @@ function renderTranscript() {
   const lane = currentLane();
   renderTurnStream(els.sourceText, state.currentTurn.parts, 'source', state.currentTurn.sourceText);
   renderTurnStream(els.targetText, state.currentTurn.parts, 'target', state.currentTurn.targetText);
-  els.sourcePaneMeta.textContent = codeForLanguage(lane.sourceLanguage);
-  els.targetPaneMeta.textContent = codeForLanguage(lane.targetLanguage);
   renderDirectionLabels(lane);
   pinToBottomIfFollowing(els.sourceText);
   pinToBottomIfFollowing(els.targetText);

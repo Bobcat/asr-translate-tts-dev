@@ -6,10 +6,8 @@
   --text-strong: #1e293b;
   --muted: #64748b;
   --border: #e2e8f0;
-  --border-soft: #dbe2ea;
   --primary: #3b82f6;
   --primary-pressed: #2563eb;
-  --primary-soft: #e5e7eb;
   --accent: #3b82f6;
   --warning: #854d0e;
   --danger: #ef4444;
@@ -253,17 +251,14 @@ button {
 .settings-button {
   width: 28px;
   min-width: 28px;
-  padding: 0 2px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.settings-button {
   height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--muted);
   font-size: 1rem;
   font-weight: 700;
@@ -359,13 +354,6 @@ button {
 
 .app:not(.is-setup) .pane h1 {
   display: none;
-}
-
-.pane-meta {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 0.74rem;
-  font-weight: 700;
 }
 
 .pane-indicators {
@@ -593,11 +581,6 @@ button {
   scrollbar-gutter: stable;
 }
 
-.target-pane .text-stream {
-  font-size: 0.94rem;
-  font-weight: 400;
-}
-
 .text-stream:empty::before {
   content: attr(data-empty);
   color: var(--muted);
@@ -642,7 +625,6 @@ button {
   grid-template-columns: auto minmax(0, 1fr) auto auto;
 }
 
-.action-dock[hidden],
 .dock-action[hidden],
 .setup-switch-action[hidden] {
   display: none;
@@ -748,10 +730,6 @@ button {
 
 .finish-action:hover {
   background: var(--danger);
-}
-
-.finish-action::before {
-  display: none;
 }
 
 .finish-action:disabled {
@@ -881,18 +859,14 @@ button {
 }
 
 .settings-views {
+  display: grid;
+  gap: 8px;
   overflow: auto;
   padding: 10px;
   font-size: 0.85rem;
   line-height: var(--dialog-body-line-height);
 }
 
-.settings-views {
-  display: grid;
-  gap: 8px;
-}
-
-.setting-row,
 .setting-group,
 .settings-nav-row {
   min-height: 48px;
@@ -903,7 +877,6 @@ button {
   background: var(--surface);
 }
 
-.setting-row,
 .settings-nav-row {
   display: flex;
   align-items: center;
@@ -988,10 +961,6 @@ button {
 .settings-back.is-sheet-close .settings-back-down-icon,
 .settings-back.is-subpage-back .settings-back-left-icon {
   display: block;
-}
-
-.settings-back[hidden] {
-  display: none;
 }
 
 .setting-title-row {

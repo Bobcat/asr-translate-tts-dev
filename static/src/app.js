@@ -18,6 +18,10 @@ const MIC_STATES = {
   LISTENING: 'listening',
   OFF: 'off',
 };
+const DEFAULT_AUDIO_SETTINGS = {
+  preGain: 1.5,
+  autoGainControl: true,
+};
 const LANGUAGE_FLAGS = {
   ar: '🇸🇦',
   de: '🇩🇪',
@@ -57,6 +61,7 @@ const els = {
   settingsButton: document.querySelector('#settingsButton'),
   sourceText: document.querySelector('#sourceText'),
   targetText: document.querySelector('#targetText'),
+  translateNowButton: document.querySelector('#translateNowButton'),
   speakNowButton: document.querySelector('#speakNowButton'),
   sessionRightLabel: document.querySelector('#sessionRightLabel'),
   clearTurnButton: document.querySelector('#clearTurnButton'),
@@ -114,8 +119,8 @@ const state = {
   settingsPage: 'home',
   vadHintTimer: null,
   audioSettings: {
-    preGain: 1,
-    autoGainControl: false,
+    preGain: DEFAULT_AUDIO_SETTINGS.preGain,
+    autoGainControl: DEFAULT_AUDIO_SETTINGS.autoGainControl,
     autoGainControlBusy: false,
     inputLevel: 0,
   },
@@ -180,6 +185,7 @@ async function init() {
   els.targetLanguageSelect.addEventListener('change', () => setVisibleLanguage('target', els.targetLanguageSelect.value));
   els.setupSwapButton.addEventListener('click', swapSetupLanguages);
   els.swapButton.addEventListener('click', swapDirection);
+  els.translateNowButton.addEventListener('click', translateNow);
   els.speakNowButton.addEventListener('click', speakNow);
   els.clearTurnButton.addEventListener('click', clearTurn);
   els.settingsButton.addEventListener('click', openSettingsSheet);
@@ -365,6 +371,14 @@ function speakNow() {
   }
 }
 
+function translateNow() {
+  if (state.sessionState !== SESSION_STATES.RUNNING) return;
+  if (!state.currentTurn.canTranslateNow) return;
+  if (state.socket?.translateNow()) {
+    els.miniStatus.textContent = 'Translating';
+  }
+}
+
 function clearTurn() {
   if (state.sessionState !== SESSION_STATES.RUNNING) return;
   if (state.socket?.clearTurn()) {
@@ -459,6 +473,11 @@ function handleMessage(msg) {
     updateActionButtons();
     return;
   }
+  if (msg.type === 'translation_status') {
+    els.miniStatus.textContent = msg.message || msg.reason || '';
+    updateActionButtons();
+    return;
+  }
   if (msg.type === 'asr_status') {
     if (!els.miniStatus.textContent) {
       els.miniStatus.textContent = 'Processing speech';
@@ -522,6 +541,8 @@ function applyCurrentTurn(payload) {
 function renderTurnStatus(reason) {
   if (state.audioStatus) return;
   if (reason === 'source_c') {
+    els.miniStatus.textContent = 'Translating';
+  } else if (reason === 'translate_now') {
     els.miniStatus.textContent = 'Translating';
   } else if (reason === 'translation_update') {
     els.miniStatus.textContent = 'Translation ready';
@@ -588,6 +609,7 @@ function renderLifecycle() {
   els.sourceText.hidden = setup;
   els.turnHeaderActions.hidden = !running;
   els.setupSwapButton.hidden = !setup;
+  els.translateNowButton.hidden = !running;
   els.speakNowButton.hidden = !running;
   els.finishButton.hidden = !running;
   els.miniStatus.hidden = !state.debugSettings.showStatusLine;
@@ -608,10 +630,17 @@ function setListenBusy(busy) {
 }
 
 function updateActionButtons() {
+  updateTranslateNowButton();
   updateSpeakNowButton();
   updateClearTurnButton();
   updateSessionRightAction();
   renderLanguageControls();
+}
+
+function updateTranslateNowButton() {
+  const turnIsSpeaking = state.currentTurn.state === TURN_STATES.OPEN_SPEAKING;
+  const live = state.sessionState === SESSION_STATES.RUNNING && state.socket?.isOpen();
+  els.translateNowButton.disabled = !(live && state.currentTurn.canTranslateNow && !turnIsSpeaking);
 }
 
 function updateSpeakNowButton() {
@@ -800,17 +829,17 @@ async function handleAutoGainControlChange() {
 }
 
 async function resetAudioSettings() {
-  state.audioSettings.preGain = 1;
+  state.audioSettings.preGain = DEFAULT_AUDIO_SETTINGS.preGain;
   state.capture?.setPreGain(state.audioSettings.preGain);
   if (state.sessionState === SESSION_STATES.RUNNING && state.capture) {
-    state.audioSettings.autoGainControl = false;
+    state.audioSettings.autoGainControl = DEFAULT_AUDIO_SETTINGS.autoGainControl;
     await restartMicrophoneCapture({ statusText: 'Audio reset' });
     return;
   }
   if (state.sessionState !== SESSION_STATES.RUNNING) {
-    state.audioSettings.autoGainControl = false;
+    state.audioSettings.autoGainControl = DEFAULT_AUDIO_SETTINGS.autoGainControl;
   } else if (state.micState === MIC_STATES.OFF) {
-    state.audioSettings.autoGainControl = false;
+    state.audioSettings.autoGainControl = DEFAULT_AUDIO_SETTINGS.autoGainControl;
   }
   renderAudioSettings();
 }
@@ -1112,6 +1141,7 @@ function createLocalTurn(laneId, lanes) {
     sourceText: '',
     targetText: '',
     speakableTargetText: '',
+    canTranslateNow: false,
     canSpeakNow: false,
     parts: [],
   };
@@ -1135,6 +1165,7 @@ function normalizeTurnPayload(payload) {
     sourceText,
     targetText,
     speakableTargetText,
+    canTranslateNow: Boolean(payload?.can_translate_now ?? joinTranslatableSourcePreviewText(parts)),
     canSpeakNow: Boolean(payload?.can_speak_now ?? speakableTargetText),
     parts,
   };
@@ -1168,6 +1199,14 @@ function joinSpeakableTargetText(parts) {
   return (parts || [])
     .filter((part) => part.speechState !== 'spoken')
     .map((part) => part.targetText)
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function joinTranslatableSourcePreviewText(parts) {
+  return (parts || [])
+    .filter((part) => part.speechState !== 'spoken')
+    .map((part) => part.sourcePreviewText)
     .filter(Boolean)
     .join('\n\n');
 }

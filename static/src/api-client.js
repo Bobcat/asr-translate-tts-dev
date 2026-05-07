@@ -79,6 +79,12 @@ export class SessionSocket {
     return true;
   }
 
+  translateNow() {
+    if (!this.isOpen()) return false;
+    this.ws.send(JSON.stringify({ type: 'translate_now' }));
+    return true;
+  }
+
   nextTurn(laneId) {
     if (!this.isOpen()) return false;
     this.ws.send(JSON.stringify({ type: 'next_turn', lane_id: laneId }));

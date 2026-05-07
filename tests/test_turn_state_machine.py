@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import patch
+
+from realtime_translation_engine import SourceEvent
 
 from app.runtime import ConversationRuntime
 from app.runtime import TurnPart
@@ -52,6 +55,16 @@ class SlowTTS:
             "language": language,
             "chars": len(text),
         }
+
+
+class RecordingTranslationBridge:
+    def __init__(self, text: str = "I live downtown") -> None:
+        self.text = text
+        self.calls: list[str] = []
+
+    def run(self, request) -> SimpleNamespace:
+        self.calls.append(request.opportunity.source_window)
+        return SimpleNamespace(text=self.text, wall_ms=1.0, model="fake-translation")
 
 
 class TurnStateMachineTests(unittest.IsolatedAsyncioTestCase):
@@ -138,6 +151,44 @@ class TurnStateMachineTests(unittest.IsolatedAsyncioTestCase):
         payload_part = speak_now_update["current_turn"]["parts"][0]
         self.assertEqual(payload_part["source_committed_text"], "Ik woon in het centrum")
         self.assertEqual(payload_part["source_preview_text"], "")
+
+    async def test_translate_now_accepts_source_preview_and_dispatches_translation(self) -> None:
+        runtime, websocket = self.make_runtime(FastTTS())
+        lane = runtime._current_lane()
+        bridge = RecordingTranslationBridge()
+        lane.translation_bridge = bridge
+
+        part = runtime.current_turn.parts[0]
+        part.source_committed_text = "Ik woon"
+        part.source_preview_text = "in het centrum"
+        part.target_committed_text = ""
+        lane.source_state.source_committed_text = "Ik woon"
+        lane.source_state.source_preview_text = "in het centrum"
+
+        committed_event = SourceEvent(kind="c", text="Ik woon", line_number=1)
+        lane.translation_runner.on_source_event(committed_event, lane.source_state)
+
+        await runtime._translate_now()
+        task = lane.translation_task
+        self.assertIsNotNone(task)
+        await task
+
+        self.assertEqual(bridge.calls, ["Ik woon in het centrum"])
+        self.assertEqual(part.source_committed_text, "Ik woon in het centrum")
+        self.assertEqual(part.source_preview_text, "")
+        self.assertEqual(part.target_preview_text, "I live downtown")
+        translate_now_update = next(
+            event
+            for event in websocket.sent
+            if event["type"] == "turn_update" and event["reason"] == "translate_now"
+        )
+        self.assertFalse(translate_now_update["current_turn"]["can_translate_now"])
+        translation_update = next(
+            event
+            for event in websocket.sent
+            if event["type"] == "turn_update" and event["reason"] == "translation_update"
+        )
+        self.assertTrue(translation_update["current_turn"]["can_speak_now"])
 
     async def test_clear_turn_while_tts_is_pending_discards_turn_and_drops_late_audio(self) -> None:
         runtime, websocket = self.make_runtime(SlowTTS())

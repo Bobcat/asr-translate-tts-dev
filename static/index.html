@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ASR Translate TTS</title>
-    <link rel="stylesheet" href="/styles.css?v=20260507-kokoro-languages">
+    <link rel="stylesheet" href="/styles.css?v=20260507-translate-now">
   </head>
   <body>
     <main class="app is-setup">
@@ -89,6 +89,7 @@
           </svg>
           <span class="turn-language-label" id="setupTargetLanguage">EN</span>
         </button>
+        <button class="secondary-action dock-action" id="translateNowButton" type="button" disabled hidden>Translate now</button>
         <button class="primary-action dock-action" id="speakNowButton" type="button" disabled hidden>Speak now</button>
         <button class="dock-action session-right-action" id="finishButton" type="button" aria-label="Finish" title="Finish" hidden>
           <svg class="session-right-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -125,7 +126,7 @@
                   <strong>Microphone</strong>
                   <small>Level and amplification</small>
                 </span>
-                <span class="setting-value" id="micSettingsSummary">1.0x</span>
+                <span class="setting-value" id="micSettingsSummary">1.5x, AGC</span>
               </button>
               <button class="settings-nav-row" id="settingsAudioNav" type="button">
                 <span>
@@ -154,10 +155,10 @@
               <section class="setting-group" aria-label="Microphone">
                 <div class="setting-title-row">
                   <span>Amplification</span>
-                  <span class="setting-value" id="micPreGainValue">1.0x</span>
+                  <span class="setting-value" id="micPreGainValue">1.5x</span>
                 </div>
                 <label class="range-row" for="micPreGain">
-                  <input id="micPreGain" type="range" min="0.5" max="3.0" step="0.1" value="1.0" aria-label="Amplification">
+                  <input id="micPreGain" type="range" min="0.5" max="3.0" step="0.1" value="1.5" aria-label="Amplification">
                 </label>
                 <div class="setting-title-row">
                   <span>Input level</span>
@@ -167,7 +168,7 @@
                   <div class="mic-level-threshold" aria-hidden="true"></div>
                 </div>
                 <label class="toggle-row" for="micAutoGainControl">
-                  <input id="micAutoGainControl" type="checkbox">
+                  <input id="micAutoGainControl" type="checkbox" checked>
                   <span>Auto gain control</span>
                 </label>
                 <button class="link-row settings-start-button" id="settingsStartButton" type="button">Start recording</button>
@@ -211,6 +212,6 @@
         </section>
       </div>
     </main>
-    <script type="module" src="/src/app.js?v=20260507-kokoro-languages"></script>
+    <script type="module" src="/src/app.js?v=20260507-translate-now"></script>
   </body>
 </html>

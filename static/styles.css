@@ -650,7 +650,7 @@ button {
 .action-dock {
   position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 0.82fr) minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
@@ -674,12 +674,17 @@ button {
 }
 
 #speakNowButton {
+  grid-column: 3;
+  justify-self: stretch;
+}
+
+#translateNowButton {
   grid-column: 2;
   justify-self: stretch;
 }
 
 #finishButton {
-  grid-column: 3;
+  grid-column: 4;
   justify-self: end;
 }
 
@@ -713,7 +718,7 @@ button {
 }
 
 .secondary-action {
-  width: auto;
+  width: 100%;
   min-height: 38px;
   display: inline-flex;
   align-items: center;

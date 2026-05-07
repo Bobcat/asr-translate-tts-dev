@@ -109,6 +109,7 @@ class ConversationLane:
     source_state: SourceTranscriptState = field(default_factory=SourceTranscriptState)
     asr_inflight: LaneASRJob | None = None
     translation_task: asyncio.Task[Any] | None = None
+    translation_generation: int = 0
     tts_task: asyncio.Task[Any] | None = None
     last_target_committed: str = ""
     line_number: int = 0
@@ -259,6 +260,9 @@ class ConversationRuntime:
             return True
         if msg_type == "speak_now":
             await self._speak_now()
+            return True
+        if msg_type == "translate_now":
+            await self._translate_now()
             return True
         if msg_type == "tts_playback_complete":
             await self._tts_playback_complete(payload)
@@ -531,6 +535,25 @@ class ConversationRuntime:
             self._run_tts(lane.lane_id, turn.turn_id, text, speaking_part_ids)
         )
 
+    async def _translate_now(self) -> None:
+        lane = self._current_lane()
+        turn = self.current_turn
+        if turn.state == TurnState.OPEN_SPEAKING:
+            await self._send_translation_status(state="skipped", reason="turn_speaking", message="Audio is playing")
+            return
+        preview_text = _turn_source_preview_text(turn)
+        if not preview_text:
+            await self._send_translation_status(state="skipped", reason="empty_source_preview", message="No preview yet")
+            return
+        committed_text = str(lane.source_state.source_committed_text or "")
+        commit_text = _commit_event_text_for_preview(committed_text, preview_text)
+        if not commit_text.strip():
+            await self._send_translation_status(state="skipped", reason="empty_source_preview", message="No preview yet")
+            return
+        self._close_asr_scope_for_turn(lane)
+        await self._retire_translation_work(lane)
+        await self._source_event(lane, kind="c", text=commit_text, reason="translate_now")
+
     async def _run_tts(self, lane_id: str, turn_id: str, text: str, speaking_part_ids: list[str]) -> None:
         lane = self.lanes[lane_id]
         current_task = asyncio.current_task()
@@ -608,7 +631,14 @@ class ConversationRuntime:
         self._refresh_turn_state()
         await self._send_turn_update(reason="tts_playback_complete")
 
-    async def _source_event(self, lane: ConversationLane, *, kind: str, text: str) -> None:
+    async def _source_event(
+        self,
+        lane: ConversationLane,
+        *,
+        kind: str,
+        text: str,
+        reason: str | None = None,
+    ) -> None:
         if lane.lane_id != self.current_turn.lane_id or not is_open_turn(self.current_turn.state):
             return
         if self.current_turn.state == TurnState.OPEN_SPEAKING:
@@ -626,23 +656,55 @@ class ConversationRuntime:
             part.source_preview_text = lane.source_state.source_preview_text
 
         self._refresh_turn_state()
-        await self._send_turn_update(reason=f"source_{kind}")
+        await self._send_turn_update(reason=reason or f"source_{kind}")
 
         step = lane.translation_runner.on_source_event(source_event, lane.source_state)
         if step.dispatch_request is not None:
             self._schedule_translation(lane, step.dispatch_request, turn_id=turn_id)
 
+    async def _retire_translation_work(self, lane: ConversationLane) -> None:
+        lane.translation_generation += 1
+        await _cancel_task(lane.translation_task)
+        lane.translation_task = None
+        lane.translation_runner.retire_inflight()
+
+    async def _send_translation_status(self, *, state: str, reason: str, message: str) -> None:
+        lane = self._current_lane()
+        await self._send(
+            event(
+                "translation_status",
+                self.session_id,
+                state=state,
+                reason=reason,
+                lane_id=lane.lane_id,
+                turn_id=self.current_turn.turn_id,
+                message=message,
+            )
+        )
+
     def _schedule_translation(self, lane: ConversationLane, request: LiveDispatchRequest, *, turn_id: str) -> None:
         if lane.translation_task is not None and not lane.translation_task.done():
             return
-        lane.translation_task = asyncio.create_task(self._run_translation(lane.lane_id, turn_id, request))
+        lane.translation_task = asyncio.create_task(
+            self._run_translation(lane.lane_id, turn_id, request, lane.translation_generation)
+        )
 
-    async def _run_translation(self, lane_id: str, turn_id: str, request: LiveDispatchRequest) -> None:
+    async def _run_translation(
+        self,
+        lane_id: str,
+        turn_id: str,
+        request: LiveDispatchRequest,
+        generation: int,
+    ) -> None:
         lane = self.lanes[lane_id]
         current_task = asyncio.current_task()
         try:
             translation = await asyncio.to_thread(lane.translation_bridge.run, request)
-            if self.current_turn.turn_id != turn_id or self.current_turn.state == TurnState.OPEN_SPEAKING:
+            if (
+                generation != lane.translation_generation
+                or self.current_turn.turn_id != turn_id
+                or self.current_turn.state == TurnState.OPEN_SPEAKING
+            ):
                 return
             step = lane.translation_runner.on_llm_result(request, translation.text)
         except asyncio.CancelledError:
@@ -663,7 +725,11 @@ class ConversationRuntime:
             if lane.translation_task is current_task:
                 lane.translation_task = None
 
-        if self.current_turn.turn_id != turn_id or self.current_turn.state == TurnState.OPEN_SPEAKING:
+        if (
+            generation != lane.translation_generation
+            or self.current_turn.turn_id != turn_id
+            or self.current_turn.state == TurnState.OPEN_SPEAKING
+        ):
             return
         target_state = lane.translation_runner.target_state
         committed = str(target_state.target_committed_text or "")
@@ -714,6 +780,7 @@ class ConversationRuntime:
     def _reset_lane_text_scope(self, lane: ConversationLane) -> None:
         lane.source_state = SourceTranscriptState()
         lane.translation_runner = self._build_translation_runner()
+        lane.translation_generation += 1
         lane.last_target_committed = ""
         lane.line_number = 0
         lane.pending_tts = None
@@ -894,6 +961,7 @@ class ConversationRuntime:
             "target_text": _turn_target_text(turn),
             "speakable_target_text": _turn_speakable_target_text(turn),
             "can_speak_now": bool(_turn_speakable_target_text(turn)),
+            "can_translate_now": bool(_turn_source_preview_text(turn) and turn.state != TurnState.OPEN_SPEAKING),
             "parts": [_part_payload(part) for part in turn.parts],
         }
 
@@ -1026,6 +1094,16 @@ def _accepted_preview_text(committed: str, preview: str) -> str:
     return _visible_text(committed_text, preview_text)
 
 
+def _commit_event_text_for_preview(committed: str, preview: str) -> str:
+    committed_text = str(committed or "").rstrip()
+    accepted = _accepted_preview_text(committed_text, preview)
+    if not committed_text:
+        return accepted
+    if accepted.startswith(committed_text):
+        return accepted[len(committed_text) :]
+    return accepted
+
+
 def _part_source_text(part: TurnPart) -> str:
     return _visible_text(part.source_committed_text, part.source_preview_text)
 
@@ -1047,6 +1125,14 @@ def _turn_speakable_target_text(turn: ConversationTurn) -> str:
         text
         for part in turn.parts
         if part.speech_state != "spoken" and (text := _part_target_text(part))
+    )
+
+
+def _turn_source_preview_text(turn: ConversationTurn) -> str:
+    return "\n\n".join(
+        text
+        for part in turn.parts
+        if part.speech_state != "spoken" and (text := str(part.source_preview_text or "").strip())
     )
 
 

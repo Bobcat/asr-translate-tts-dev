@@ -29,6 +29,7 @@ Next
 | 2 | [Turn State Machine Next](turn-state-machine-next.md) | Done | Defines current app-level turn and `turn_part` behavior, including spoken-vs-unspoken content, guarded updates while speaking, and the flat `OPEN_*` turn states. Implemented in backend runtime, frontend state mapping, and turn-state tests. |
 | 3 | [View Modes And Session Lifecycle](view-modes-session-lifecycle.md) | Partly done | Current Turn view, setup/running/ended shell, settings placement, language setup, status pill, reset, History settings shell, mobile styling, manual `RUNNING/listening` <-> `RUNNING/mic_off`, and automatic mic-off after TTS playback are implemented. Conversation view remains disabled. |
 | 4 | [Kokoro TTS Baseline](kokoro-tts-baseline.md) | Done | Records the current Kokoro singleton, shared `KModel`, per-language `KPipeline` cache, TTS metrics scope, hardware, and cold/warm baseline timings. |
+| 5 | [Translate Now Design](translate-now-design.md) | Done | Defines and implements the manual source-side translation action, separate from target-side `speak_now`. |
 
 ## Remaining Targets
 

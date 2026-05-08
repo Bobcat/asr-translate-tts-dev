@@ -154,6 +154,8 @@ class LiveASRPoolBridge:
                 min_speakers = get_int("live.asr.diarize_min_speakers", 1, min_value=1)
                 max_speakers = get_int("live.asr.diarize_max_speakers", 4, min_value=1)
 
+        asr_backend = optional_str("live.asr.backend")
+        use_direct_fw = str(asr_backend or "").strip().lower() == "faster_whisper_direct"
         submit = ASRSubmitRequest(
             request_id=request_id,
             consumer_id=self.consumer_id,
@@ -174,10 +176,21 @@ class LiveASRPoolBridge:
                 min_speakers=min_speakers,
                 max_speakers=max_speakers,
                 beam_size=_optional_int_setting("live.asr.beam_size"),
-                chunk_size=_optional_int_setting("live.asr.chunk_size"),
-                asr_backend=optional_str("live.asr.backend"),
+                chunk_size=None if use_direct_fw else _optional_int_setting("live.asr.chunk_size"),
+                asr_backend=asr_backend,
+                chunk_length=_optional_int_setting("live.asr.chunk_length"),
+                vad_filter=_optional_bool_setting("live.asr.vad_filter"),
+                vad_parameters=_optional_dict_setting("live.asr.vad_parameters"),
+                word_timestamps=_optional_bool_setting("live.asr.word_timestamps"),
+                max_new_tokens=_optional_int_setting("live.asr.max_new_tokens"),
+                hotwords=optional_str("live.asr.hotwords"),
+                compression_ratio_threshold=_optional_float_setting("live.asr.compression_ratio_threshold"),
+                log_prob_threshold=_optional_float_setting("live.asr.log_prob_threshold"),
+                no_speech_threshold=_optional_float_setting("live.asr.no_speech_threshold"),
+                language_detection_threshold=_optional_float_setting("live.asr.language_detection_threshold"),
+                language_detection_segments=_optional_int_setting("live.asr.language_detection_segments"),
             ),
-            outputs=ASROutputSelection(text=False, segments=False, srt=True, srt_inline=True),
+            outputs=ASROutputSelection(text=True, segments=True, srt=False, srt_inline=False),
         )
         status = self._client.submit_audio(submit)
         accepted_id = str(status.request_id or request_id).strip() or request_id
@@ -234,9 +247,17 @@ class LiveASRPoolBridge:
         if raw_state == "completed":
             response = dict(terminal.get("response") or {})
             result = dict(response.get("result") or {})
-            srt_text = str(result.get("srt_text") or "")
-            segments = _parse_srt_segments(srt_text, t0_offset_ms=t0_offset_ms)
-            text = "\n".join(str(seg.get("text") or "").strip() for seg in segments if str(seg.get("text") or "").strip())
+            segments = _pool_json_segments(result.get("segments"), t0_offset_ms=t0_offset_ms)
+            if not segments:
+                srt_text = str(result.get("srt_text") or "")
+                segments = _parse_srt_segments(srt_text, t0_offset_ms=t0_offset_ms)
+            text = str(result.get("text") or "").strip()
+            if not text:
+                text = "\n".join(
+                    str(seg.get("text") or "").strip()
+                    for seg in segments
+                    if str(seg.get("text") or "").strip()
+                )
             with self._lock:
                 self._request_meta.pop(rid, None)
             return ASRJobResult(
@@ -286,6 +307,27 @@ def _optional_int_setting(path: str) -> int | None:
     return int(max(1, int(raw)))
 
 
+def _optional_float_setting(path: str) -> float | None:
+    raw = get_setting(path, None)
+    if raw is None:
+        return None
+    return float(raw)
+
+
+def _optional_bool_setting(path: str) -> bool | None:
+    raw = get_setting(path, None)
+    if raw is None:
+        return None
+    return bool(raw)
+
+
+def _optional_dict_setting(path: str) -> dict[str, Any] | None:
+    raw = get_setting(path, None)
+    if not isinstance(raw, dict) or not raw:
+        return None
+    return dict(raw)
+
+
 def _normalize_language(language: str | None) -> str | None:
     text = str(language or "").strip().lower()
     return text or None
@@ -294,6 +336,65 @@ def _normalize_language(language: str | None) -> str | None:
 def _safe_token(value: str) -> str:
     text = str(value or "").strip() or "unknown"
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text)
+
+
+def _int_ms_from_segment(seg: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        if key not in seg or seg.get(key) is None:
+            continue
+        try:
+            return int(round(float(seg.get(key))))
+        except Exception:
+            continue
+    return None
+
+
+def _sec_ms_from_segment(seg: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        if key not in seg or seg.get(key) is None:
+            continue
+        try:
+            return int(round(float(seg.get(key)) * 1000.0))
+        except Exception:
+            continue
+    return None
+
+
+def _pool_json_segments(raw_segments: Any, *, t0_offset_ms: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for raw in list(raw_segments or []):
+        if not isinstance(raw, dict):
+            continue
+        text = str(raw.get("text") or "").strip()
+        if not text:
+            continue
+        rel_t0_ms = _int_ms_from_segment(raw, "t0_ms", "start_ms")
+        if rel_t0_ms is None:
+            rel_t0_ms = _sec_ms_from_segment(raw, "start")
+        rel_t1_ms = _int_ms_from_segment(raw, "t1_ms", "end_ms")
+        if rel_t1_ms is None:
+            rel_t1_ms = _sec_ms_from_segment(raw, "end")
+        if rel_t0_ms is None:
+            rel_t0_ms = 0
+        if rel_t1_ms is None:
+            rel_t1_ms = rel_t0_ms
+        speaker = str(raw.get("speaker") or "").strip()
+        if not speaker:
+            match = _SPEAKER_PREFIX_RE.match(text)
+            if match:
+                speaker = str(match.group(1) or "").strip().upper().replace(" ", "_")
+        t0_ms = int(max(0, rel_t0_ms + int(max(0, t0_offset_ms))))
+        t1_ms = int(max(t0_ms, rel_t1_ms + int(max(0, t0_offset_ms))))
+        out.append(
+            {
+                "segment_id": str(raw.get("segment_id") or f"s{len(out) + 1:04d}"),
+                "text": text,
+                "t0_ms": t0_ms,
+                "t1_ms": t1_ms,
+                "speaker": speaker,
+            }
+        )
+    return out
 
 
 def _srt_ts_to_ms(token: str) -> int:

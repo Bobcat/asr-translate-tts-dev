@@ -48,6 +48,7 @@ const els = {
   setupStartPanel: document.querySelector('#setupStartPanel'),
   startButton: document.querySelector('#startButton'),
   turnHeaderActions: document.querySelector('#turnHeaderActions'),
+  micToggleButton: document.querySelector('#micToggleButton'),
   finishButton: document.querySelector('#finishButton'),
   miniStatus: document.querySelector('#miniStatus'),
   sourceLanguageSelect: document.querySelector('#sourceLanguageSelect'),
@@ -63,7 +64,6 @@ const els = {
   targetText: document.querySelector('#targetText'),
   translateNowButton: document.querySelector('#translateNowButton'),
   speakNowButton: document.querySelector('#speakNowButton'),
-  sessionRightLabel: document.querySelector('#sessionRightLabel'),
   clearTurnButton: document.querySelector('#clearTurnButton'),
   swapButton: document.querySelector('#swapButton'),
   audioResumeButton: document.querySelector('#audioResumeButton'),
@@ -179,6 +179,7 @@ async function init() {
   renderTtsOutputState(config.tts);
 
   els.startButton.addEventListener('click', handleStartButton);
+  els.micToggleButton.addEventListener('click', handleMicToggle);
   els.finishButton.addEventListener('click', handleSessionRightAction);
   els.turnModeButton.addEventListener('click', () => setViewMode('turn'));
   els.sourceLanguageSelect.addEventListener('change', () => setVisibleLanguage('source', els.sourceLanguageSelect.value));
@@ -280,19 +281,22 @@ async function startListening({ statusDetail = 'Opening connection' } = {}) {
 function handleStartButton() {
   if (state.sessionState === SESSION_STATES.SETUP) {
     startListening();
+  }
+}
+
+function handleMicToggle() {
+  if (state.sessionState !== SESSION_STATES.RUNNING) return;
+  if (state.micState === MIC_STATES.LISTENING) {
+    stopMicrophoneCapture({ statusText: 'Mic off' });
     return;
   }
-  if (state.sessionState === SESSION_STATES.RUNNING && state.micState === MIC_STATES.OFF) {
+  if (state.micState === MIC_STATES.OFF) {
     startMicrophoneCapture();
   }
 }
 
 function handleSessionRightAction() {
   if (state.sessionState !== SESSION_STATES.RUNNING) return;
-  if (state.micState === MIC_STATES.LISTENING) {
-    stopMicrophoneCapture({ statusText: 'Mic off' });
-    return;
-  }
   finishSession();
 }
 
@@ -599,18 +603,18 @@ function renderLifecycle() {
   const setup = state.sessionState === SESSION_STATES.SETUP;
   const running = state.sessionState === SESSION_STATES.RUNNING;
   const micOff = running && state.micState === MIC_STATES.OFF;
-  const micOffWithSourceText = micOff && hasSourceText();
   const micListening = running && state.micState === MIC_STATES.LISTENING;
   els.app.classList.toggle('is-setup', setup);
   els.app.classList.toggle('is-running', running);
   els.app.classList.toggle('is-mic-off', micOff);
   els.app.classList.toggle('is-mic-listening', micListening);
-  els.setupStartPanel.hidden = !(setup || (micOff && !micOffWithSourceText));
+  els.setupStartPanel.hidden = !setup;
   els.sourceText.hidden = setup;
   els.turnHeaderActions.hidden = !running;
   els.setupSwapButton.hidden = !setup;
   els.translateNowButton.hidden = !running;
   els.speakNowButton.hidden = !running;
+  els.micToggleButton.hidden = !running;
   els.finishButton.hidden = !running;
   els.miniStatus.hidden = !state.debugSettings.showStatusLine;
   els.startButton.disabled = state.status === 'connecting';
@@ -632,6 +636,7 @@ function setListenBusy(busy) {
 function updateActionButtons() {
   updateTranslateNowButton();
   updateSpeakNowButton();
+  updateMicToggleButton();
   updateClearTurnButton();
   updateSessionRightAction();
   renderLanguageControls();
@@ -650,13 +655,14 @@ function updateSpeakNowButton() {
   const canPlayAudio = Boolean(live && audioQueue?.hasAudio());
   els.speakNowButton.disabled = !(canSpeakTarget || canPlayAudio);
   els.speakNowButton.classList.toggle('is-busy', turnIsSpeaking);
+  let label = 'Speak now';
   if (state.audioStatus.startsWith('Playing')) {
-    els.speakNowButton.textContent = 'Playing...';
+    label = 'Playing';
   } else if (canPlayAudio) {
-    els.speakNowButton.textContent = 'Play audio';
-  } else {
-    els.speakNowButton.textContent = 'Speak now';
+    label = 'Play audio';
   }
+  els.speakNowButton.setAttribute('aria-label', label);
+  els.speakNowButton.title = label;
 }
 
 function updateClearTurnButton() {
@@ -668,13 +674,22 @@ function updateClearTurnButton() {
 
 function updateSessionRightAction() {
   const live = state.sessionState === SESSION_STATES.RUNNING && state.socket?.isOpen();
-  const micListening = state.micState === MIC_STATES.LISTENING;
   els.finishButton.disabled = !live;
-  els.finishButton.classList.toggle('is-mic-off-action', micListening);
-  els.finishButton.classList.toggle('is-finish-action', !micListening);
-  els.sessionRightLabel.textContent = micListening ? 'Mic off' : 'Finish';
-  els.finishButton.setAttribute('aria-label', micListening ? 'Turn microphone off' : 'Finish session');
-  els.finishButton.title = micListening ? 'Mic off' : 'Finish';
+  els.finishButton.setAttribute('aria-label', 'Finish session');
+  els.finishButton.title = 'Finish';
+}
+
+function updateMicToggleButton() {
+  const live = state.sessionState === SESSION_STATES.RUNNING && state.socket?.isOpen();
+  const micListening = state.micState === MIC_STATES.LISTENING;
+  const micOff = state.micState === MIC_STATES.OFF;
+  const enabled = live && (micListening || micOff) && state.status !== 'connecting';
+  els.micToggleButton.disabled = !enabled;
+  els.micToggleButton.classList.toggle('is-mic-listening-action', micListening);
+  els.micToggleButton.classList.toggle('is-mic-on-action', micOff);
+  const label = micListening ? 'Turn microphone off' : 'Turn microphone on';
+  els.micToggleButton.setAttribute('aria-label', label);
+  els.micToggleButton.title = micListening ? 'Mic off' : 'Mic on';
 }
 
 function setStatus(status, detail) {
@@ -960,13 +975,13 @@ function renderMicLevel(value) {
   els.micLevelFill.style.transform = `scaleX(${level.toFixed(3)})`;
   els.micLevel.setAttribute('aria-valuenow', String(percent));
   els.micLevel.classList.toggle('is-hot', level >= 0.9);
-  const haloLevel = Math.sqrt(level);
+  const haloLevel = state.micState === MIC_STATES.LISTENING ? Math.sqrt(level) : 0;
   const clipRisk = state.micState === MIC_STATES.LISTENING && level >= 0.95;
   const hot = level >= 0.85;
-  els.finishButton.classList.toggle('is-clip-risk', clipRisk);
-  els.finishButton.style.setProperty('--session-right-halo-color', clipRisk ? '185, 28, 28' : hot ? '245, 158, 11' : '59, 130, 246');
-  els.finishButton.style.setProperty('--session-right-halo-alpha', (0.08 + haloLevel * (clipRisk ? 0.42 : hot ? 0.36 : 0.3)).toFixed(3));
-  els.finishButton.style.setProperty('--session-right-halo-size', `${Math.round(haloLevel * 14)}px`);
+  els.micToggleButton.classList.toggle('is-clip-risk', clipRisk);
+  els.micToggleButton.style.setProperty('--mic-toggle-halo-color', clipRisk ? '185, 28, 28' : hot ? '245, 158, 11' : '59, 130, 246');
+  els.micToggleButton.style.setProperty('--mic-toggle-halo-alpha', (haloLevel ? 0.08 + haloLevel * (clipRisk ? 0.42 : hot ? 0.36 : 0.3) : 0).toFixed(3));
+  els.micToggleButton.style.setProperty('--mic-toggle-halo-size', `${Math.round(haloLevel * 14)}px`);
 }
 
 function renderLanguageSelectOptions() {
@@ -1021,39 +1036,9 @@ function renderTranscript() {
   const lane = currentLane();
   renderTurnStream(els.sourceText, state.currentTurn.parts, 'source', state.currentTurn.sourceText);
   renderTurnStream(els.targetText, state.currentTurn.parts, 'target', state.currentTurn.targetText);
-  renderInlineStartMic();
   renderDirectionLabels(lane);
   pinToBottomIfFollowing(els.sourceText);
   pinToBottomIfFollowing(els.targetText);
-}
-
-function renderInlineStartMic() {
-  els.sourceText.querySelector('.inline-start-mic')?.remove();
-  if (state.sessionState !== SESSION_STATES.RUNNING || state.micState !== MIC_STATES.OFF) return;
-  if (!hasSourceText()) return;
-  const target = [...els.sourceText.querySelectorAll('.turn-part')]
-    .reverse()
-    .find((part) => part.textContent.trim());
-  if (!target) return;
-  target.append(' ');
-  target.append(createInlineStartMicButton());
-}
-
-function createInlineStartMicButton() {
-  const button = document.createElement('button');
-  button.className = 'inline-start-mic';
-  button.type = 'button';
-  button.setAttribute('aria-label', 'Start microphone');
-  button.title = 'Start microphone';
-  button.addEventListener('click', startMicrophoneCapture);
-  button.innerHTML = `
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-      <line x1="12" y1="19" x2="12" y2="22"></line>
-    </svg>
-  `;
-  return button;
 }
 
 function renderDirectionLabels(lane) {
@@ -1259,10 +1244,6 @@ function previewSuffixText(committed, preview) {
 function directionLabel() {
   const lane = currentLane();
   return `${codeForLanguage(lane.sourceLanguage)} -> ${codeForLanguage(lane.targetLanguage)}`;
-}
-
-function hasSourceText() {
-  return Boolean(state.currentTurn.sourceText || joinPartText(state.currentTurn.parts, 'source'));
 }
 
 function normalizePreGain(value) {

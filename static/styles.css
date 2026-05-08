@@ -107,7 +107,6 @@ button {
 .mode-button,
 .settings-button,
 .icon-action,
-.secondary-action,
 .link-row {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -526,17 +525,6 @@ button {
   display: none;
 }
 
-.app.is-running.is-mic-off .setup-start-panel {
-  position: absolute;
-  inset: 0;
-  background: transparent;
-  pointer-events: none;
-}
-
-.app.is-running.is-mic-off .setup-start-button {
-  pointer-events: auto;
-}
-
 .setup-start-button {
   width: 64px;
   height: 64px;
@@ -616,41 +604,10 @@ button {
   white-space: pre-wrap;
 }
 
-.inline-start-mic {
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  vertical-align: -6px;
-  align-items: center;
-  justify-content: center;
-  margin-left: 4px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  color: #ffffff;
-  background: var(--primary);
-  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.24);
-  cursor: pointer;
-}
-
-.inline-start-mic:active {
-  background: var(--primary-pressed);
-}
-
-.inline-start-mic svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
 .action-dock {
   position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 0.82fr) minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
@@ -670,137 +627,73 @@ button {
 }
 
 .dock-icon-button {
+  grid-column: 1;
+  grid-row: 1;
   justify-self: start;
+  z-index: 1;
 }
 
 #speakNowButton {
-  grid-column: 3;
-  justify-self: stretch;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  justify-self: center;
 }
 
 #translateNowButton {
-  grid-column: 2;
-  justify-self: stretch;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  justify-self: center;
+  transform: translateX(-46px);
 }
 
 #finishButton {
-  grid-column: 4;
+  grid-column: 3;
+  grid-row: 1;
   justify-self: end;
+  z-index: 1;
 }
 
-.primary-action {
-  width: 100%;
-  min-height: 38px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: var(--radius);
-  background: var(--primary);
-  color: #ffffff;
-  font-size: 0.9rem;
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: 0;
-  cursor: pointer;
-  box-shadow: none;
+#micToggleButton {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  justify-self: center;
+  transform: translateX(46px);
 }
 
-.primary-action:active {
-  background: var(--primary-pressed);
-}
-
-.primary-action:disabled {
-  cursor: default;
-  opacity: 0.46;
-}
-
-.primary-action.is-busy {
-  background: var(--accent);
-}
-
-.secondary-action {
-  width: 100%;
-  min-height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 0 12px;
-  color: var(--text);
-  background: var(--surface);
-  font-size: 0.9rem;
-  font-weight: 500;
-  line-height: 1.2;
-}
-
-.secondary-action:disabled {
-  cursor: default;
-  opacity: 0.48;
-}
-
-.session-right-action {
-  --session-right-halo-alpha: 0;
-  --session-right-halo-color: 59, 130, 246;
-  --session-right-halo-size: 0px;
-  width: auto;
-  min-width: 72px;
-  min-height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 12px;
-  border: 0;
-  border-radius: var(--radius);
-  font-size: 0.9rem;
-  font-weight: 500;
-  line-height: 1.2;
-  cursor: pointer;
-}
-
-.session-right-action.is-mic-off-action {
+.round-action {
+  z-index: 1;
   width: 38px;
   height: 38px;
   min-width: 38px;
   min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
+  border: 0;
   border-radius: 50%;
-  color: #ffffff;
   background: var(--primary);
-  box-shadow: 0 0 0 var(--session-right-halo-size) rgba(var(--session-right-halo-color), var(--session-right-halo-alpha));
-  transition: box-shadow 80ms linear, background-color 0.2s ease;
+  color: #ffffff;
+  cursor: pointer;
+  box-shadow: none;
 }
 
-.session-right-action.is-mic-off-action:active {
+.round-action:active {
   background: var(--primary-pressed);
 }
 
-.session-right-action.is-finish-action {
-  color: var(--danger);
-  background: #fef2f2;
+.round-action:disabled {
+  cursor: default;
+  opacity: 0.46;
 }
 
-.session-right-action.is-finish-action:hover {
-  background: #fee2e2;
+.round-action.is-busy {
+  background: var(--accent);
 }
 
-.session-right-action.is-clip-risk {
-  animation: session-right-clip-pulse 640ms ease-in-out infinite;
-}
-
-@keyframes session-right-clip-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 var(--session-right-halo-size) rgba(var(--session-right-halo-color), var(--session-right-halo-alpha));
-  }
-
-  50% {
-    box-shadow: 0 0 0 calc(var(--session-right-halo-size) + 4px) rgba(var(--session-right-halo-color), calc(var(--session-right-halo-alpha) + 0.12));
-  }
-}
-
-.session-right-icon {
+.round-action-icon {
   width: 21px;
   height: 21px;
-  display: none;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.9;
@@ -808,22 +701,53 @@ button {
   stroke-linejoin: round;
 }
 
-.session-right-action.is-mic-off-action .session-right-icon {
+.mic-toggle-action {
+  --mic-toggle-halo-alpha: 0;
+  --mic-toggle-halo-color: 59, 130, 246;
+  --mic-toggle-halo-size: 0px;
+  box-shadow: 0 0 0 var(--mic-toggle-halo-size) rgba(var(--mic-toggle-halo-color), var(--mic-toggle-halo-alpha));
+  transition: box-shadow 80ms linear, background-color 0.2s ease;
+}
+
+.mic-toggle-action.is-clip-risk {
+  animation: mic-toggle-clip-pulse 640ms ease-in-out infinite;
+}
+
+@keyframes mic-toggle-clip-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 var(--mic-toggle-halo-size) rgba(var(--mic-toggle-halo-color), var(--mic-toggle-halo-alpha));
+  }
+
+  50% {
+    box-shadow: 0 0 0 calc(var(--mic-toggle-halo-size) + 4px) rgba(var(--mic-toggle-halo-color), calc(var(--mic-toggle-halo-alpha) + 0.12));
+  }
+}
+
+.mic-toggle-icon {
+  display: none;
+}
+
+.mic-toggle-action.is-mic-listening-action .mic-toggle-off-icon,
+.mic-toggle-action.is-mic-on-action .mic-toggle-on-icon {
   display: block;
 }
 
-.session-right-action.is-mic-off-action .session-right-label {
-  position: fixed;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
+.finish-action {
+  background: var(--danger);
 }
 
-.session-right-action:disabled {
-  cursor: default;
-  opacity: 0.48;
+.finish-action:active {
+  background: #dc2626;
+}
+
+.finish-action:disabled {
+  opacity: 0.46;
+}
+
+.finish-action-icon {
+  fill: none;
+  stroke-width: 2.1;
 }
 
 .mini-status {

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ASR Translate TTS</title>
-    <link rel="stylesheet" href="/styles.css?v=20260507-translate-now">
+    <link rel="stylesheet" href="/styles.css?v=20260508-finish-icon">
   </head>
   <body>
     <main class="app is-setup">
@@ -89,15 +89,39 @@
           </svg>
           <span class="turn-language-label" id="setupTargetLanguage">EN</span>
         </button>
-        <button class="secondary-action dock-action" id="translateNowButton" type="button" disabled hidden>Translate now</button>
-        <button class="primary-action dock-action" id="speakNowButton" type="button" disabled hidden>Speak now</button>
-        <button class="dock-action session-right-action" id="finishButton" type="button" aria-label="Finish" title="Finish" hidden>
-          <svg class="session-right-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <button class="dock-action round-action translate-action" id="translateNowButton" type="button" aria-label="Translate now" title="Translate now" disabled hidden>
+          <svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 5h9"></path>
+            <path d="M9 3v2"></path>
+            <path d="M6 9c1.4 2 3.6 3.4 6 4.1"></path>
+            <path d="M12 5c-.5 3.1-2.8 6.2-6 8"></path>
+            <path d="M15 19l3-8 3 8"></path>
+            <path d="M16.1 16h3.8"></path>
+          </svg>
+        </button>
+        <button class="dock-action round-action speak-action" id="speakNowButton" type="button" aria-label="Speak now" title="Speak now" disabled hidden>
+          <svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9v6h4l5 4V5L8 9H4Z"></path>
+            <path d="M16 9.5a4 4 0 0 1 0 5"></path>
+            <path d="M18.5 7a7 7 0 0 1 0 10"></path>
+          </svg>
+        </button>
+        <button class="dock-action round-action mic-toggle-action is-mic-listening-action" id="micToggleButton" type="button" aria-label="Turn microphone off" title="Mic off" disabled hidden>
+          <svg class="round-action-icon mic-toggle-icon mic-toggle-off-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
             <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
             <line x1="5" y1="19" x2="19" y2="5"></line>
           </svg>
-          <span class="session-right-label" id="sessionRightLabel">Finish</span>
+          <svg class="round-action-icon mic-toggle-icon mic-toggle-on-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="22"></line>
+          </svg>
+        </button>
+        <button class="dock-action round-action finish-action" id="finishButton" type="button" aria-label="Finish session" title="Finish" hidden>
+          <svg class="round-action-icon finish-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="8" y="8" width="8" height="8" rx="1.6"></rect>
+          </svg>
         </button>
         <div class="mini-status" id="miniStatus" hidden></div>
       </footer>
@@ -212,6 +236,6 @@
         </section>
       </div>
     </main>
-    <script type="module" src="/src/app.js?v=20260507-translate-now"></script>
+    <script type="module" src="/src/app.js?v=20260508-finish-icon"></script>
   </body>
 </html>

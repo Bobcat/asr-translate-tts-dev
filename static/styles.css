@@ -972,9 +972,6 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.settings-nav-row {
   width: 100%;
   color: var(--text);
   cursor: pointer;

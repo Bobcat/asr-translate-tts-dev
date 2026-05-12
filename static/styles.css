@@ -127,7 +127,6 @@ button {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--surface);
-  border-inline: 1px solid var(--border);
 }
 
 .topbar {

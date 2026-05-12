@@ -1453,10 +1453,6 @@ button {
     padding: 6px 10px;
   }
 
-  .mode-button {
-    padding-inline: 8px;
-  }
-
   .settings-button {
     min-width: 28px;
     padding: 0 2px;

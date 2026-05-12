@@ -329,7 +329,7 @@ async function init() {
   els.micToggleButton.addEventListener('click', handleMicToggle);
   els.pcExportButton.addEventListener('click', exportPcTranscript);
   els.finishButton.addEventListener('click', handleSessionRightAction);
-  els.turnModeButton.addEventListener('click', () => setViewMode('turn'));
+  els.turnModeButton?.addEventListener('click', () => setViewMode('turn'));
   els.sourceLanguageSelect.addEventListener('change', () => setVisibleLanguage('source', els.sourceLanguageSelect.value));
   els.targetLanguageSelect.addEventListener('change', () => setVisibleLanguage('target', els.targetLanguageSelect.value));
   els.setupSwapButton.addEventListener('click', swapSetupLanguages);
@@ -817,10 +817,10 @@ function renderLifecycle() {
   els.startButton.disabled = state.status === 'connecting';
   els.settingsStartButton.disabled = !(setup || micOff) || state.status === 'connecting';
   els.setupSwapButton.disabled = !setup || state.status === 'connecting';
-  els.turnModeButton.classList.toggle('is-active', state.viewMode === 'turn');
-  els.turnModeButton.setAttribute('aria-pressed', state.viewMode === 'turn' ? 'true' : 'false');
-  els.conversationModeButton.classList.toggle('is-active', state.viewMode === 'conversation');
-  els.conversationModeButton.setAttribute('aria-pressed', state.viewMode === 'conversation' ? 'true' : 'false');
+  els.turnModeButton?.classList.toggle('is-active', state.viewMode === 'turn');
+  els.turnModeButton?.setAttribute('aria-pressed', state.viewMode === 'turn' ? 'true' : 'false');
+  els.conversationModeButton?.classList.toggle('is-active', state.viewMode === 'conversation');
+  els.conversationModeButton?.setAttribute('aria-pressed', state.viewMode === 'conversation' ? 'true' : 'false');
   renderLanguageControls();
   renderStatus(state.status);
 }

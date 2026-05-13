@@ -238,8 +238,6 @@ const els = {
   languageSearch: document.querySelector('#languageSearch'),
   languageSheetList: document.querySelector('#languageSheetList'),
   setupSwapButton: document.querySelector('#setupSwapButton'),
-  setupSourceLanguage: document.querySelector('#setupSourceLanguage'),
-  setupTargetLanguage: document.querySelector('#setupTargetLanguage'),
   turnSourceLanguage: document.querySelector('#turnSourceLanguage'),
   turnTargetLanguage: document.querySelector('#turnTargetLanguage'),
   installAppRow: document.querySelector('#installAppRow'),
@@ -1995,8 +1993,8 @@ function renderLanguageControls() {
   const isConnecting = state.status === 'connecting';
   const shouldDisable = !setup || isConnecting;
 
-  els.sourceLanguagePillText.textContent = `${flagForLanguage(lane.sourceLanguage)} ${lane.sourceLanguage}`;
-  els.targetLanguagePillText.textContent = `${flagForLanguage(lane.targetLanguage)} ${lane.targetLanguage}`;
+  els.sourceLanguagePillText.textContent = lane.sourceLanguage;
+  els.targetLanguagePillText.textContent = lane.targetLanguage;
 
   els.sourceLanguagePill.hidden = !setup;
   els.targetLanguagePill.hidden = !setup;
@@ -2152,12 +2150,8 @@ function renderDirectionLabels(lane) {
   const targetCode = codeForLanguage(lane.targetLanguage);
   els.turnSourceLanguage.textContent = sourceCode;
   els.turnTargetLanguage.textContent = targetCode;
-  els.setupSourceLanguage.textContent = sourceCode;
-  els.setupTargetLanguage.textContent = targetCode;
   els.turnSourceLanguage.title = lane.sourceLanguage;
   els.turnTargetLanguage.title = lane.targetLanguage;
-  els.setupSourceLanguage.title = lane.sourceLanguage;
-  els.setupTargetLanguage.title = lane.targetLanguage;
 }
 
 function renderTurnStream(el, parts, role, fallbackText) {

@@ -102,36 +102,64 @@ KOKORO_VOICE_OPTIONS = {
         ("jm_kumo", "Kumo"),
     ),
 }
-VOXCPM2_VOICE_PRESETS = {
-    "configured": {
-        "label": "Default",
-        "prompt": "",
-    },
-    "neutral_clear": {
-        "label": "Neutral clear",
-        "prompt": "Use a clear, neutral adult voice with steady articulation.",
-    },
-    "warm_female": {
-        "label": "Warm female",
-        "prompt": "Use a warm adult female voice with natural intonation.",
-    },
-    "calm_male": {
-        "label": "Calm male",
-        "prompt": "Use a calm adult male voice with measured delivery.",
-    },
-    "focused_narrator": {
-        "label": "Focused narrator",
-        "prompt": "Use a focused narrator voice with crisp diction.",
-    },
+VOXCPM2_MODE_OPTIONS = (
+    ("description", "From description"),
+    ("reference_audio", "From reference audio"),
+)
+VOXCPM2_GENDER_OPTIONS = (
+    ("no_preference", "No preference"),
+    ("female", "Female"),
+    ("male", "Male"),
+)
+VOXCPM2_STYLE_OPTIONS = (
+    ("neutral", "Neutral"),
+    ("warm", "Warm"),
+    ("calm", "Calm"),
+    ("clear", "Clear"),
+)
+# (value, label, disabled) — Phase 1 enables only "last_speech".
+VOXCPM2_REFERENCE_SOURCE_OPTIONS = (
+    ("last_speech", "Last speech fragment", False),
+    ("stable_generated", "Stable generated", True),
+    ("own_voice", "Own voice (later)", True),
+)
+VOXCPM2_DEFAULT_TRIM_SECONDS = 8.0
+VOXCPM2_DEFAULT_LANGUAGE_CONFIG = {
+    "mode": "description",
+    "gender": "no_preference",
+    "style": "neutral",
 }
-VOXCPM2_REFERENCE_PROMPT = "Match the speaking pace, rhythm, and articulation of the reference audio."
-VOXCPM2_LANGUAGE_PROMPT_TEMPLATE = (
-    "Speak in {target_lang}. Pronounce numbers, abbreviations, and short fragments in {target_lang}."
-)
-VOXCPM2_REFERENCE_MATCH_OPTIONS = (
-    ("voice", "Voice only"),
-    ("voice_and_pace", "Voice + pace"),
-)
+VOXCPM2_GENDER_PROMPT_CLAUSES = {
+    "no_preference": "Use a natural adult voice.",
+    "female": "Use a natural adult female voice.",
+    "male": "Use a natural adult male voice.",
+}
+VOXCPM2_STYLE_PROMPT_CLAUSES = {
+    "neutral": "Use a neutral, natural speaking style.",
+    "warm": "Use a warm, natural speaking style.",
+    "calm": "Use a calm, measured speaking style.",
+    "clear": "Use a clear, articulate speaking style.",
+}
+# Display name -> BCP-47 lowercase tag. Mirrors static/src/shared/languages.js.
+LANGUAGE_BCP47_BY_NAME = {
+    "English": "en",
+    "British English": "en-gb",
+    "Dutch": "nl",
+    "German": "de",
+    "French": "fr",
+    "Spanish": "es",
+    "Hindi": "hi",
+    "Italian": "it",
+    "Portuguese": "pt-pt",
+    "Brazilian Portuguese": "pt-br",
+    "Polish": "pl",
+    "Ukrainian": "uk",
+    "Turkish": "tr",
+    "Arabic": "ar",
+    "Chinese": "zh-cn",
+    "Japanese": "ja",
+    "Korean": "ko",
+}
 
 
 class TTSBridge:
@@ -235,13 +263,13 @@ def tts_settings_payload() -> dict[str, Any]:
             language: _options_payload(options)
             for language, options in KOKORO_VOICE_OPTIONS.items()
         },
-        "voxcpm2_voice_presets": _options_payload(
-            (key, str(value["label"]), str(value["prompt"] or ""))
-            for key, value in VOXCPM2_VOICE_PRESETS.items()
-        ),
-        "voxcpm2_language_prompt_template": VOXCPM2_LANGUAGE_PROMPT_TEMPLATE,
-        "voxcpm2_reference_prompt": VOXCPM2_REFERENCE_PROMPT,
-        "voxcpm2_reference_match_options": _options_payload(VOXCPM2_REFERENCE_MATCH_OPTIONS),
+        "voxcpm2_modes": _options_payload(VOXCPM2_MODE_OPTIONS),
+        "voxcpm2_genders": _options_payload(VOXCPM2_GENDER_OPTIONS),
+        "voxcpm2_styles": _options_payload(VOXCPM2_STYLE_OPTIONS),
+        "voxcpm2_reference_sources": [
+            {"value": str(value), "label": str(label), "disabled": bool(disabled)}
+            for value, label, disabled in VOXCPM2_REFERENCE_SOURCE_OPTIONS
+        ],
     }
     return payload
 
@@ -250,8 +278,13 @@ def update_tts_settings(delta: dict[str, Any]) -> tuple[dict[str, Any], dict[str
     normalized, errors = _normalize_tts_settings_delta(delta)
     if errors:
         return tts_settings_payload(), errors
+    languages_replacement: dict[str, Any] | None = None
+    if isinstance(normalized.get("voxcpm2"), dict) and "languages" in normalized["voxcpm2"]:
+        languages_replacement = normalized["voxcpm2"].pop("languages")
     with _TTS_SETTINGS_LOCK:
         _merge_settings_into(_TTS_RUNTIME_OVERRIDES, normalized)
+        if languages_replacement is not None:
+            _TTS_RUNTIME_OVERRIDES.setdefault("voxcpm2", {})["languages"] = languages_replacement
     return tts_settings_payload(), {}
 
 
@@ -260,9 +293,12 @@ def clear_tts_runtime_overrides() -> None:
         _TTS_RUNTIME_OVERRIDES.clear()
 
 
-def tts_uses_asr_reference_wav() -> bool:
+def tts_uses_asr_reference_wav(language: str) -> bool:
     settings = _current_tts_settings()
-    return _is_voxcpm_family_backend(settings["backend"]) and bool(settings["voxcpm2"]["use_input_audio_reference"])
+    if not _is_voxcpm_family_backend(settings["backend"]):
+        return False
+    config = _voxcpm2_language_config(settings["voxcpm2"]["languages"], language)
+    return config["mode"] == "reference_audio"
 
 
 def artifact_path(session_id: str, artifact_id: str) -> Path:
@@ -285,23 +321,26 @@ def _tts_pool_request_payload(
         if preset:
             voice["preset"] = preset
     elif _is_voxcpm_family_backend(backend):
-        has_reference_audio = bool(settings["voxcpm2"]["use_input_audio_reference"] and reference_wav_path)
+        config = _voxcpm2_language_config(settings["voxcpm2"]["languages"], language)
+        wants_reference = config["mode"] == "reference_audio"
+        has_reference_audio = bool(wants_reference and reference_wav_path)
         instructions = _voxcpm2_voice_instructions(
             language,
-            settings["voxcpm2"],
-            reference_audio_available=has_reference_audio,
+            config,
+            has_reference_audio=has_reference_audio,
         )
         if instructions:
             voice["instructions"] = instructions
         if has_reference_audio:
+            trim_s = float(config.get("trim_seconds", VOXCPM2_DEFAULT_TRIM_SECONDS))
             reference_audio, reference_metrics, reference_metadata = _reference_audio_payload(
                 reference_wav_path,
-                max_duration_s=settings["voxcpm2"]["reference_max_duration_s"],
+                max_duration_s=trim_s,
             )
             voice["reference_audio"] = reference_audio
             request_metrics.update(reference_metrics)
             request_metadata.update(reference_metadata)
-            request_metadata["reference_client_match"] = settings["voxcpm2"]["reference_match"]
+            request_metadata["reference_client_source"] = config.get("reference_source", "last_speech")
     else:
         raise ValueError(f"unsupported tts.backend: {backend!r}")
     return {
@@ -316,28 +355,60 @@ def _tts_pool_request_payload(
 
 def _voxcpm2_voice_instructions(
     language: str,
-    settings: dict[str, Any],
+    config: dict[str, Any],
     *,
-    reference_audio_available: bool,
+    has_reference_audio: bool,
 ) -> str:
-    fragments: list[str] = []
     target_lang = str(language or "").strip()
-    _append_prompt_fragment(
-        fragments,
-        VOXCPM2_LANGUAGE_PROMPT_TEMPLATE.replace("{target_lang}", target_lang),
+    if config["mode"] == "reference_audio" and has_reference_audio:
+        return _voxcpm2_reference_instructions(target_lang)
+    return _voxcpm2_description_instructions(target_lang, config)
+
+
+def _voxcpm2_description_instructions(target_lang: str, config: dict[str, Any]) -> str:
+    gender = str(config.get("gender") or "no_preference")
+    style = str(config.get("style") or "neutral")
+    gender_clause = VOXCPM2_GENDER_PROMPT_CLAUSES.get(gender, VOXCPM2_GENDER_PROMPT_CLAUSES["no_preference"])
+    style_clause = VOXCPM2_STYLE_PROMPT_CLAUSES.get(style, VOXCPM2_STYLE_PROMPT_CLAUSES["neutral"])
+    return (
+        f"Speak in {target_lang}. "
+        f"Pronounce numbers, abbreviations, and short fragments in {target_lang}. "
+        f"{gender_clause} {style_clause} "
+        "Speak clearly and generate only the requested text."
     )
-    preset = str(_lookup_language_value(settings["voice_presets"], language) or "configured")
-    preset_prompt = str(VOXCPM2_VOICE_PRESETS.get(preset, {}).get("prompt") or "")
-    _append_prompt_fragment(fragments, preset_prompt)
-    if reference_audio_available and settings["reference_match"] == "voice_and_pace":
-        _append_prompt_fragment(fragments, VOXCPM2_REFERENCE_PROMPT)
-    return " ".join(fragments).strip()
 
 
-def _append_prompt_fragment(fragments: list[str], value: str) -> None:
-    clean = str(value or "").strip()
-    if clean and clean not in fragments:
-        fragments.append(clean)
+def _voxcpm2_reference_instructions(target_lang: str) -> str:
+    return (
+        f"Speak in {target_lang}. "
+        f"Pronounce numbers, abbreviations, and short fragments in {target_lang}. "
+        "Use the reference audio as the voice reference. "
+        f"Do not infer the output language from the reference audio; the output language is {target_lang}. "
+        "Do not copy or continue the content of the reference audio. "
+        "Speak clearly and generate only the requested text."
+    )
+
+
+def _voxcpm2_language_config(languages_map: dict[str, Any], language: str) -> dict[str, Any]:
+    tag = _bcp47_tag_for_language_name(language)
+    if tag and isinstance(languages_map, dict):
+        entry = languages_map.get(tag)
+        if isinstance(entry, dict):
+            return _normalize_voxcpm2_language_entry(entry)
+    return dict(VOXCPM2_DEFAULT_LANGUAGE_CONFIG)
+
+
+def _bcp47_tag_for_language_name(language: Any) -> str | None:
+    text = str(language or "").strip()
+    if not text:
+        return None
+    if text in LANGUAGE_BCP47_BY_NAME:
+        return LANGUAGE_BCP47_BY_NAME[text]
+    folded = text.lower()
+    for name, tag in LANGUAGE_BCP47_BY_NAME.items():
+        if name.lower() == folded:
+            return tag
+    return None
 
 
 def _reference_audio_payload(reference_wav_path: str, *, max_duration_s: float) -> tuple[dict[str, Any], dict[str, float], dict[str, Any]]:
@@ -517,10 +588,7 @@ def _current_tts_settings() -> dict[str, Any]:
             "voices": _configured_kokoro_voices(),
         },
         "voxcpm2": {
-            "voice_presets": _configured_voxcpm2_voice_presets(),
-            "use_input_audio_reference": get_bool("tts.voxcpm2_use_asr_reference_wav", False),
-            "reference_max_duration_s": _configured_voxcpm2_reference_max_duration_s(),
-            "reference_match": _configured_voxcpm2_reference_match(),
+            "languages": {},
         },
     }
     with _TTS_SETTINGS_LOCK:
@@ -542,27 +610,6 @@ def _configured_kokoro_voices() -> dict[str, str]:
         if voices[language] not in values:
             voices[language] = options[0][0]
     return voices
-
-
-def _configured_voxcpm2_voice_presets() -> dict[str, str]:
-    configured = get_setting("tts.voxcpm2_voice_presets", {})
-    if not isinstance(configured, dict):
-        return {}
-    presets: dict[str, str] = {}
-    for language, value in configured.items():
-        language_key = str(language or "").strip()
-        preset = str(value or "").strip()
-        if language_key and preset in VOXCPM2_VOICE_PRESETS:
-            presets[language_key] = preset
-    return presets
-
-
-def _configured_voxcpm2_reference_max_duration_s() -> float:
-    return _clamped_float(get_setting("tts.voxcpm2_reference_max_duration_s", 8.0), default=8.0, min_value=1.0, max_value=60.0)
-
-
-def _configured_voxcpm2_reference_match() -> str:
-    return _normalized_reference_match(get_setting("tts.voxcpm2_reference_match", "voice"))
 
 
 def _normalize_tts_settings_delta(delta: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
@@ -593,24 +640,12 @@ def _normalize_tts_settings_delta(delta: dict[str, Any]) -> tuple[dict[str, Any]
             errors["voxcpm2"] = "must be an object"
         else:
             normalized_voxcpm2 = normalized.setdefault("voxcpm2", {})
-            if "use_input_audio_reference" in voxcpm2:
-                normalized_voxcpm2["use_input_audio_reference"] = bool(voxcpm2["use_input_audio_reference"])
-            if "reference_max_duration_s" in voxcpm2:
-                normalized_voxcpm2["reference_max_duration_s"] = _normalize_reference_max_duration(
-                    voxcpm2.get("reference_max_duration_s"),
-                    errors,
-                )
-            if "reference_match" in voxcpm2:
-                normalized_voxcpm2["reference_match"] = _normalize_reference_match(
-                    voxcpm2.get("reference_match"),
-                    errors,
-                )
-            if "voice_presets" in voxcpm2:
-                presets = voxcpm2.get("voice_presets")
-                if not isinstance(presets, dict):
-                    errors["voxcpm2.voice_presets"] = "must be an object"
+            if "languages" in voxcpm2:
+                languages = voxcpm2.get("languages")
+                if not isinstance(languages, dict):
+                    errors["voxcpm2.languages"] = "must be an object"
                 else:
-                    normalized_voxcpm2["voice_presets"] = _normalize_voxcpm2_presets(presets, errors)
+                    normalized_voxcpm2["languages"] = _normalize_voxcpm2_languages(languages, errors)
     if errors:
         return {}, errors
     return normalized, {}
@@ -632,40 +667,85 @@ def _normalize_kokoro_voices(voices: dict[str, Any], errors: dict[str, str]) -> 
     return normalized
 
 
-def _normalize_voxcpm2_presets(presets: dict[str, Any], errors: dict[str, str]) -> dict[str, str]:
-    normalized: dict[str, str] = {}
-    for language, value in presets.items():
-        language_key = str(language or "").strip()
-        preset = str(value or "").strip()
-        if not language_key:
-            errors["voxcpm2.voice_presets"] = "language is required"
+_VOXCPM2_MODE_VALUES = {value for value, _ in VOXCPM2_MODE_OPTIONS}
+_VOXCPM2_GENDER_VALUES = {value for value, _ in VOXCPM2_GENDER_OPTIONS}
+_VOXCPM2_STYLE_VALUES = {value for value, _ in VOXCPM2_STYLE_OPTIONS}
+_VOXCPM2_REFERENCE_SOURCE_VALUES = {
+    value for value, _label, disabled in VOXCPM2_REFERENCE_SOURCE_OPTIONS if not disabled
+}
+_VOXCPM2_KNOWN_BCP47_TAGS = set(LANGUAGE_BCP47_BY_NAME.values())
+
+
+def _normalize_voxcpm2_languages(value: Any, errors: dict[str, str]) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        errors["voxcpm2.languages"] = "must be an object"
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for tag, entry in value.items():
+        tag_key = str(tag or "").strip().lower()
+        if not tag_key:
+            errors["voxcpm2.languages"] = "language tag is required"
             continue
-        if preset not in VOXCPM2_VOICE_PRESETS:
-            errors[f"voxcpm2.voice_presets.{language_key}"] = "unsupported preset"
+        if tag_key not in _VOXCPM2_KNOWN_BCP47_TAGS:
+            errors[f"voxcpm2.languages.{tag_key}"] = "unsupported language tag"
             continue
-        normalized[language_key] = preset
+        if not isinstance(entry, dict):
+            errors[f"voxcpm2.languages.{tag_key}"] = "must be an object"
+            continue
+        normalized[tag_key] = _normalize_voxcpm2_language_entry(
+            entry,
+            errors=errors,
+            errors_prefix=f"voxcpm2.languages.{tag_key}",
+        )
     return normalized
 
 
-def _normalize_reference_max_duration(value: Any, errors: dict[str, str]) -> float:
-    try:
-        return _clamped_float(value, default=8.0, min_value=1.0, max_value=60.0)
-    except (TypeError, ValueError):
-        errors["voxcpm2.reference_max_duration_s"] = "must be a number"
-        return 8.0
-
-
-def _normalize_reference_match(value: Any, errors: dict[str, str]) -> str:
-    text = str(value or "").strip()
-    if text in {option[0] for option in VOXCPM2_REFERENCE_MATCH_OPTIONS}:
-        return text
-    errors["voxcpm2.reference_match"] = "unsupported reference match"
-    return "voice"
-
-
-def _normalized_reference_match(value: Any) -> str:
-    text = str(value or "").strip()
-    return text if text in {option[0] for option in VOXCPM2_REFERENCE_MATCH_OPTIONS} else "voice"
+def _normalize_voxcpm2_language_entry(
+    entry: dict[str, Any],
+    *,
+    errors: dict[str, str] | None = None,
+    errors_prefix: str = "voxcpm2.languages",
+) -> dict[str, Any]:
+    mode = str(entry.get("mode") or "description").strip().lower()
+    if mode not in _VOXCPM2_MODE_VALUES:
+        if errors is not None:
+            errors[f"{errors_prefix}.mode"] = "unsupported mode"
+        mode = "description"
+    result: dict[str, Any] = {"mode": mode}
+    if mode == "description":
+        gender = str(entry.get("gender") or "no_preference").strip().lower()
+        if gender not in _VOXCPM2_GENDER_VALUES:
+            if errors is not None:
+                errors[f"{errors_prefix}.gender"] = "unsupported gender"
+            gender = "no_preference"
+        style = str(entry.get("style") or "neutral").strip().lower()
+        if style not in _VOXCPM2_STYLE_VALUES:
+            if errors is not None:
+                errors[f"{errors_prefix}.style"] = "unsupported style"
+            style = "neutral"
+        result["gender"] = gender
+        result["style"] = style
+    else:
+        reference_source = str(entry.get("reference_source") or "last_speech").strip().lower()
+        if reference_source not in _VOXCPM2_REFERENCE_SOURCE_VALUES:
+            if errors is not None:
+                errors[f"{errors_prefix}.reference_source"] = "unsupported reference source"
+            reference_source = "last_speech"
+        trim_raw = entry.get("trim_seconds", VOXCPM2_DEFAULT_TRIM_SECONDS)
+        try:
+            trim = _clamped_float(
+                trim_raw if trim_raw is not None else VOXCPM2_DEFAULT_TRIM_SECONDS,
+                default=VOXCPM2_DEFAULT_TRIM_SECONDS,
+                min_value=1.0,
+                max_value=60.0,
+            )
+        except (TypeError, ValueError):
+            if errors is not None:
+                errors[f"{errors_prefix}.trim_seconds"] = "must be a number"
+            trim = VOXCPM2_DEFAULT_TRIM_SECONDS
+        result["reference_source"] = reference_source
+        result["trim_seconds"] = trim
+    return result
 
 
 def _kokoro_voice_for_language(language: str) -> str | None:

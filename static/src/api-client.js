@@ -130,6 +130,16 @@ export class SessionSocket {
     return true;
   }
 
+  replayTts({ laneId, text }) {
+    if (!this.isOpen()) return false;
+    this.ws.send(JSON.stringify({
+      type: 'replay_tts',
+      lane_id: laneId,
+      text: String(text || ''),
+    }));
+    return true;
+  }
+
   ttsPlaybackComplete({ laneId, turnId, artifactId }) {
     if (!this.isOpen()) return false;
     this.ws.send(JSON.stringify({

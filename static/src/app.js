@@ -121,10 +121,7 @@ const DEFAULT_TTS_SETTINGS = {
     voices: {},
   },
   voxcpm2: {
-    voice_presets: {},
-    use_input_audio_reference: false,
-    reference_max_duration_s: 8,
-    reference_match: 'voice',
+    languages: {},
   },
 };
 const DEFAULT_TTS_OPTIONS = {
@@ -134,26 +131,45 @@ const DEFAULT_TTS_OPTIONS = {
     { value: 'nanovllm_voxcpm', label: 'NanoVLLM VoxCPM' },
   ],
   kokoro_voices: {},
-  voxcpm2_voice_presets: [
-    { value: 'configured', label: 'Default', prompt: '' },
+  voxcpm2_modes: [
+    { value: 'description', label: 'From description' },
+    { value: 'reference_audio', label: 'From reference audio' },
   ],
-  voxcpm2_language_prompt_template: 'Speak in {target_lang}. Pronounce numbers, abbreviations, and short fragments in {target_lang}.',
-  voxcpm2_reference_prompt: 'Match the speaking pace, rhythm, and articulation of the reference audio.',
-  voxcpm2_reference_match_options: [
-    { value: 'voice', label: 'Voice only' },
-    { value: 'voice_and_pace', label: 'Voice + pace' },
+  voxcpm2_genders: [
+    { value: 'no_preference', label: 'No preference' },
+    { value: 'female', label: 'Female' },
+    { value: 'male', label: 'Male' },
+  ],
+  voxcpm2_styles: [
+    { value: 'neutral', label: 'Neutral' },
+    { value: 'warm', label: 'Warm' },
+    { value: 'calm', label: 'Calm' },
+    { value: 'clear', label: 'Clear' },
+  ],
+  voxcpm2_reference_sources: [
+    { value: 'last_speech', label: 'Last speech fragment' },
+    { value: 'stable_generated', label: 'Stable generated', disabled: true },
+    { value: 'own_voice', label: 'Own voice (later)', disabled: true },
   ],
 };
-const VOXCPM2_EXTRA_INFO_OPTIONS = [
-  { value: 'none', label: 'Nothing extra' },
-  { value: 'description', label: 'Voice description' },
-  { value: 'sample', label: 'Speech sample' },
-  { value: 'both', label: 'Description + speech sample' },
-];
-const VOXCPM2_SAMPLE_SOURCE_OPTIONS = [
-  { value: 'last_speech', label: 'Last speech fragment' },
-  { value: 'own_wav', label: 'Own WAV (later)', disabled: true },
-];
+const VOXCPM2_DEFAULT_LANGUAGE_CONFIG = {
+  mode: 'description',
+  gender: 'no_preference',
+  style: 'neutral',
+};
+const VOXCPM2_DEFAULT_TRIM_SECONDS = 8;
+const VOXCPM2_VOICE_CONFIG_STORAGE_KEY = 'voxcpm2_voice_config';
+const VOXCPM2_GENDER_CLAUSES = {
+  no_preference: 'Use a natural adult voice.',
+  female: 'Use a natural adult female voice.',
+  male: 'Use a natural adult male voice.',
+};
+const VOXCPM2_STYLE_CLAUSES = {
+  neutral: 'Use a neutral, natural speaking style.',
+  warm: 'Use a warm, natural speaking style.',
+  calm: 'Use a calm, measured speaking style.',
+  clear: 'Use a clear, articulate speaking style.',
+};
 const TUNING_CONTROLS = [
   { group: 'Backend selection', key: 'asr.backend', label: 'Backend', type: 'select', options: [['whisperx', 'WhisperX'], ['faster_whisper_direct', 'Faster Whisper']] },
   { group: 'Common decode', key: 'asr.beam_size', label: 'Beam size', type: 'number', min: 1, max: 16, step: 1 },
@@ -319,7 +335,7 @@ const state = {
   debugSettings: loadDebugSettings(),
   ttsOptions: cloneSettings(DEFAULT_TTS_OPTIONS),
   ttsExpandedGroups: new Set(),
-  ttsVoxcpm2ExtraInfoMode: null,
+  ttsVoxcpm2SelectedTag: '',
   ttsPromptInspectOpen: false,
   ttsUpdateBusy: false,
 };
@@ -352,6 +368,7 @@ audioQueue = new AudioQueue({
     stopMicrophoneCapture({ statusText: 'Mic off' });
   },
   onItemEnded: (item) => {
+    if (item.replay) return;
     state.socket?.ttsPlaybackComplete({
       laneId: item.laneId,
       turnId: item.turnId,
@@ -372,6 +389,7 @@ async function init() {
   state.audioInputSampleRate = config.audio_input?.sample_rate_hz || 16000;
   state.tuningSettings = mergeSettings(DEFAULT_TUNING_SETTINGS, config.live_settings || {});
   applyTtsConfig(config.tts || {});
+  syncVoxcpm2VoiceConfigToBackend();
 
   els.startButton.addEventListener('click', handleStartButton);
   els.micToggleButton.addEventListener('click', handleMicToggle);
@@ -411,6 +429,7 @@ async function init() {
   els.ttsBackendSelect.addEventListener('change', handleTtsBackendChange);
   els.ttsSettingsGroups.addEventListener('change', handleTtsSettingChange);
   els.ttsSettingsGroups.addEventListener('click', handleTtsSettingsClick);
+  els.targetText.addEventListener('click', handleTargetTextClick);
   els.settingsSheetScrim.addEventListener('click', closeSettingsSheet);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
@@ -707,6 +726,18 @@ function handleMessage(msg) {
         laneId: msg.lane_id,
         turnId: msg.turn_id,
         artifactId: msg.tts.artifact_id,
+      });
+    }
+    updateActionButtons();
+    return;
+  }
+  if (msg.type === 'tts_replay_ready') {
+    if (msg.tts) {
+      audioQueue.enqueue({
+        ...msg.tts,
+        laneId: msg.lane_id,
+        artifactId: msg.tts.artifact_id,
+        replay: true,
       });
     }
     updateActionButtons();
@@ -1412,7 +1443,56 @@ function applyTtsConfig(tts) {
   delete settings.options;
   state.ttsSettings = mergeSettings(DEFAULT_TTS_SETTINGS, settings);
   state.ttsOptions = mergeSettings(DEFAULT_TTS_OPTIONS, options);
+  const stored = loadVoxcpm2VoiceConfig();
+  if (Object.keys(stored).length) {
+    state.ttsSettings.voxcpm2.languages = stored;
+  }
   renderTtsSettings();
+}
+
+function loadVoxcpm2VoiceConfig() {
+  try {
+    const raw = localStorage.getItem(VOXCPM2_VOICE_CONFIG_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const normalized = {};
+    for (const [tag, entry] of Object.entries(parsed)) {
+      const cleanTag = String(tag || '').trim().toLowerCase();
+      if (!cleanTag) continue;
+      const cleanEntry = normalizeVoxcpm2LanguageEntry(entry);
+      if (cleanEntry) normalized[cleanTag] = cleanEntry;
+    }
+    return normalized;
+  } catch (_) {
+    return {};
+  }
+}
+
+function persistVoxcpm2VoiceConfig() {
+  try {
+    const payload = JSON.stringify(state.ttsSettings.voxcpm2.languages || {});
+    localStorage.setItem(VOXCPM2_VOICE_CONFIG_STORAGE_KEY, payload);
+  } catch (_) {
+    // ignore quota / disabled storage
+  }
+}
+
+function normalizeVoxcpm2LanguageEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const mode = entry.mode === 'reference_audio' ? 'reference_audio' : 'description';
+  if (mode === 'description') {
+    const allowedGenders = new Set(['no_preference', 'female', 'male']);
+    const allowedStyles = new Set(['neutral', 'warm', 'calm', 'clear']);
+    const gender = allowedGenders.has(entry.gender) ? entry.gender : 'no_preference';
+    const style = allowedStyles.has(entry.style) ? entry.style : 'neutral';
+    return { mode, gender, style };
+  }
+  const trimRaw = Number(entry.trim_seconds);
+  const trim = Number.isFinite(trimRaw)
+    ? Math.min(60, Math.max(1, trimRaw))
+    : VOXCPM2_DEFAULT_TRIM_SECONDS;
+  return { mode, reference_source: 'last_speech', trim_seconds: trim };
 }
 
 function handleTtsEnabledChange() {
@@ -1438,28 +1518,6 @@ function handleTtsSettingChange(event) {
   const previous = cloneSettings(state.ttsSettings);
   const kind = input.dataset.ttsKind || '';
   const language = input.dataset.ttsLanguage || '';
-  if (kind === 'voxcpm2-extra-info') {
-    const previousMode = state.ttsVoxcpm2ExtraInfoMode;
-    const mode = String(input.value || 'none');
-    const next = ttsSettingsForVoxcpm2Mode(mode);
-    state.ttsVoxcpm2ExtraInfoMode = mode;
-    state.ttsSettings.voxcpm2.voice_presets = next.voicePresets;
-    state.ttsSettings.voxcpm2.use_input_audio_reference = next.useReference;
-    state.ttsSettings.voxcpm2.reference_match = next.referenceMatch;
-    renderTtsSettings({ preserveScroll: true });
-    submitTtsSettings({
-      voxcpm2: {
-        voice_presets: next.voicePresets,
-        use_input_audio_reference: next.useReference,
-        reference_match: next.referenceMatch,
-      },
-    }, previous, previousMode);
-    return;
-  }
-  if (kind === 'voxcpm2-sample-source') {
-    input.value = 'last_speech';
-    return;
-  }
   if (kind === 'kokoro-voice' && language) {
     const value = String(input.value || '');
     state.ttsSettings.kokoro.voices[language] = value;
@@ -1467,27 +1525,120 @@ function handleTtsSettingChange(event) {
     submitTtsSettings({ kokoro: { voices: { [language]: value } } }, previous);
     return;
   }
-  if (kind === 'voxcpm2-preset' && language) {
-    const value = String(input.value || 'configured');
-    state.ttsSettings.voxcpm2.voice_presets[language] = value;
+  if (kind === 'voxcpm2-picker-language') {
+    state.ttsVoxcpm2SelectedTag = String(input.value || '').toLowerCase();
     renderTtsSettings({ preserveScroll: true });
-    submitTtsSettings({ voxcpm2: { voice_presets: { [language]: value } } }, previous);
     return;
   }
-  if (kind === 'voxcpm2-reference-max-duration') {
-    const value = normalizeTtsNumber(input.value, state.ttsSettings.voxcpm2.reference_max_duration_s || 8, 1, 60);
-    state.ttsSettings.voxcpm2.reference_max_duration_s = value;
-    renderTtsSettings({ preserveScroll: true });
-    submitTtsSettings({ voxcpm2: { reference_max_duration_s: value } }, previous);
+  const tag = String(language || '').toLowerCase();
+  if (!tag) return;
+  if (kind === 'voxcpm2-mode') {
+    const nextMode = input.value === 'reference_audio' ? 'reference_audio' : 'description';
+    updateVoxcpm2LanguageConfig(tag, (current) => {
+      if (nextMode === 'description') {
+        return {
+          mode: 'description',
+          gender: current.gender || VOXCPM2_DEFAULT_LANGUAGE_CONFIG.gender,
+          style: current.style || VOXCPM2_DEFAULT_LANGUAGE_CONFIG.style,
+        };
+      }
+      return {
+        mode: 'reference_audio',
+        reference_source: 'last_speech',
+        trim_seconds: Number.isFinite(Number(current.trim_seconds))
+          ? Number(current.trim_seconds)
+          : VOXCPM2_DEFAULT_TRIM_SECONDS,
+      };
+    }, previous);
     return;
   }
-  if (kind === 'voxcpm2-reference-match') {
-    const value = validVoxcpm2ReferenceMatch(input.value);
-    state.ttsSettings.voxcpm2.reference_match = value;
-    renderTtsSettings({ preserveScroll: true });
-    submitTtsSettings({ voxcpm2: { reference_match: value } }, previous);
+  if (kind === 'voxcpm2-gender') {
+    const allowed = new Set(['no_preference', 'female', 'male']);
+    const value = allowed.has(input.value) ? input.value : 'no_preference';
+    updateVoxcpm2LanguageConfig(tag, (current) => ({
+      mode: 'description',
+      gender: value,
+      style: current.style || VOXCPM2_DEFAULT_LANGUAGE_CONFIG.style,
+    }), previous);
     return;
   }
+  if (kind === 'voxcpm2-style') {
+    const allowed = new Set(['neutral', 'warm', 'calm', 'clear']);
+    const value = allowed.has(input.value) ? input.value : 'neutral';
+    updateVoxcpm2LanguageConfig(tag, (current) => ({
+      mode: 'description',
+      gender: current.gender || VOXCPM2_DEFAULT_LANGUAGE_CONFIG.gender,
+      style: value,
+    }), previous);
+    return;
+  }
+  if (kind === 'voxcpm2-reference-source') {
+    // Phase 1: only "last_speech" is selectable. The disabled options are
+    // shown for affordance only; the picker resets the value defensively.
+    updateVoxcpm2LanguageConfig(tag, (current) => ({
+      mode: 'reference_audio',
+      reference_source: 'last_speech',
+      trim_seconds: Number.isFinite(Number(current.trim_seconds))
+        ? Number(current.trim_seconds)
+        : VOXCPM2_DEFAULT_TRIM_SECONDS,
+    }), previous);
+    return;
+  }
+  if (kind === 'voxcpm2-trim-seconds') {
+    const value = normalizeTtsNumber(input.value, VOXCPM2_DEFAULT_TRIM_SECONDS, 1, 60);
+    updateVoxcpm2LanguageConfig(tag, (current) => ({
+      mode: 'reference_audio',
+      reference_source: 'last_speech',
+      trim_seconds: value,
+    }), previous);
+    return;
+  }
+}
+
+function updateVoxcpm2LanguageConfig(tag, updater, previous) {
+  const stored = state.ttsSettings.voxcpm2.languages?.[tag];
+  const current = { ...VOXCPM2_DEFAULT_LANGUAGE_CONFIG, ...(stored || {}) };
+  const next = updater(current);
+  state.ttsSettings.voxcpm2.languages = {
+    ...(state.ttsSettings.voxcpm2.languages || {}),
+    [tag]: next,
+  };
+  persistVoxcpm2VoiceConfig();
+  renderTtsSettings({ preserveScroll: true });
+  submitTtsSettings(
+    { voxcpm2: { languages: state.ttsSettings.voxcpm2.languages } },
+    previous,
+  );
+}
+
+function syncVoxcpm2VoiceConfigToBackend() {
+  const languages = state.ttsSettings.voxcpm2.languages || {};
+  if (!Object.keys(languages).length) return;
+  submitTtsSettings({ voxcpm2: { languages } }, cloneSettings(state.ttsSettings));
+}
+
+function handleTargetTextClick(event) {
+  const button = event.target?.closest?.('.bubble-speak-button');
+  if (button && els.targetText.contains(button)) {
+    triggerReplayFromButton(button);
+    return;
+  }
+  if (window.matchMedia?.('(pointer: coarse)').matches) {
+    const row = event.target?.closest?.('.turn-part.is-replayable');
+    if (row && els.targetText.contains(row)) {
+      const innerButton = row.querySelector('.bubble-speak-button');
+      if (innerButton) triggerReplayFromButton(innerButton);
+    }
+  }
+}
+
+function triggerReplayFromButton(button) {
+  const text = String(button.dataset.replayText || '').trim();
+  const laneId = String(button.dataset.replayLane || '').trim();
+  if (!text || !laneId) return;
+  if (state.sessionState !== SESSION_STATES.RUNNING) return;
+  if (!state.ttsSettings.enabled) return;
+  state.socket?.replayTts({ laneId, text });
 }
 
 function handleTtsSettingsClick(event) {
@@ -1499,7 +1650,7 @@ function handleTtsSettingsClick(event) {
   }
 }
 
-async function submitTtsSettings(delta, previousSettings, previousVoxcpm2Mode = state.ttsVoxcpm2ExtraInfoMode) {
+async function submitTtsSettings(delta, previousSettings) {
   state.ttsUpdateBusy = true;
   renderTtsSettings({ preserveScroll: true });
   try {
@@ -1507,7 +1658,6 @@ async function submitTtsSettings(delta, previousSettings, previousVoxcpm2Mode = 
     applyTtsConfig(payload.tts || {});
   } catch (error) {
     state.ttsSettings = previousSettings;
-    state.ttsVoxcpm2ExtraInfoMode = previousVoxcpm2Mode;
     setStatus('error', error.message || 'Voice settings failed');
   } finally {
     state.ttsUpdateBusy = false;
@@ -1612,72 +1762,130 @@ function kokoroTtsRows() {
 function voxcpm2TtsRows(backend) {
   const active = state.ttsSettings.backend === backend;
   const disabled = state.ttsUpdateBusy || !active;
-  const mode = voxcpm2ExtraInfoMode();
-  const rows = [createTtsSelectRow({
-    label: 'Voice instructions',
-    value: mode,
-    options: VOXCPM2_EXTRA_INFO_OPTIONS,
+  const tag = currentVoxcpm2PickerTag();
+  const config = voxcpm2LanguageConfig(tag);
+  const meta = ttsRowMeta({ active, available: true });
+  const rows = [createVoxcpm2LanguagePickerRow({ tag, disabled, meta })];
+  rows.push(createTtsSelectRow({
+    label: 'Voice instruction',
+    value: config.mode,
+    options: voxcpm2ModeOptions(),
     disabled,
-    meta: ttsRowMeta({ active, available: true }),
-    kind: 'voxcpm2-extra-info',
-    emptyLabel: 'Nothing extra',
-  })];
-  if (mode === 'description' || mode === 'both') {
-    for (const language of ttsPresetLanguages()) {
-      const value = state.ttsSettings.voxcpm2.voice_presets?.[language] || defaultVoxcpm2DescriptionPreset();
-      rows.push(createTtsSelectRow({
-        label: `${language} description`,
-        value,
-        options: voxcpm2DescriptionOptions(),
-        disabled,
-        meta: ttsRowMeta({ active, available: true }),
-        kind: 'voxcpm2-preset',
-        language,
-        emptyLabel: 'Neutral clear',
-      }));
-    }
-  }
-  if (mode === 'sample' || mode === 'both') {
+    meta,
+    kind: 'voxcpm2-mode',
+    language: tag,
+    emptyLabel: 'From description',
+  }));
+  if (config.mode === 'description') {
     rows.push(createTtsSelectRow({
-      label: 'Speech sample',
-      value: 'last_speech',
-      options: VOXCPM2_SAMPLE_SOURCE_OPTIONS,
+      label: 'Voice gender',
+      value: config.gender || 'no_preference',
+      options: voxcpm2GenderOptions(),
       disabled,
-      meta: ttsRowMeta({ active, available: true }),
-      kind: 'voxcpm2-sample-source',
+      meta,
+      kind: 'voxcpm2-gender',
+      language: tag,
+      emptyLabel: 'No preference',
+    }));
+    rows.push(createTtsSelectRow({
+      label: 'Speaking style',
+      value: config.style || 'neutral',
+      options: voxcpm2StyleOptions(),
+      disabled,
+      meta,
+      kind: 'voxcpm2-style',
+      language: tag,
+      emptyLabel: 'Neutral',
+    }));
+  } else {
+    rows.push(createTtsSelectRow({
+      label: 'Reference audio',
+      value: config.reference_source || 'last_speech',
+      options: voxcpm2ReferenceSourceOptions(),
+      disabled,
+      meta,
+      kind: 'voxcpm2-reference-source',
+      language: tag,
       emptyLabel: 'Last speech fragment',
     }));
-    rows.push(createTtsSelectRow({
-      label: 'Sample matches',
-      value: validVoxcpm2ReferenceMatch(state.ttsSettings.voxcpm2.reference_match),
-      options: voxcpm2ReferenceMatchOptions(),
-      disabled,
-      meta: ttsRowMeta({ active, available: true }),
-      kind: 'voxcpm2-reference-match',
-      emptyLabel: 'Voice only',
-    }));
     rows.push(createTtsNumberRow({
-      label: 'Max duration',
-      value: state.ttsSettings.voxcpm2.reference_max_duration_s || 8,
+      label: 'Trim reference audio',
+      value: Number.isFinite(Number(config.trim_seconds)) ? Number(config.trim_seconds) : VOXCPM2_DEFAULT_TRIM_SECONDS,
       min: 1,
       max: 60,
       step: 1,
       unit: 's',
       disabled,
-      meta: ttsRowMeta({ active, available: true }),
-      kind: 'voxcpm2-reference-max-duration',
-    }));
-    rows.push(createTtsStaticRow({
-      label: 'Own WAV',
-      value: 'Not selectable yet',
-      meta: 'later',
+      meta,
+      kind: 'voxcpm2-trim-seconds',
+      language: tag,
     }));
   }
-  rows.push(createTtsPromptInspectRows(active));
+  rows.push(createTtsPromptInspectRows(active, tag, config));
   return rows;
 }
 
-function createTtsPromptInspectRows(active) {
+function createVoxcpm2LanguagePickerRow({ tag, disabled, meta }) {
+  const row = document.createElement('label');
+  row.className = 'tuning-row';
+  const labelEl = document.createElement('span');
+  labelEl.className = 'tuning-label';
+  labelEl.textContent = 'Configure for';
+  const metaEl = document.createElement('span');
+  metaEl.className = 'tuning-meta';
+  metaEl.textContent = meta;
+  const select = document.createElement('select');
+  select.dataset.ttsKind = 'voxcpm2-picker-language';
+  select.disabled = disabled;
+  const { active: activeTags, rest: restTags } = voxcpm2PickerLanguageGroups();
+  if (activeTags.length) {
+    const group = document.createElement('optgroup');
+    group.label = 'This session';
+    for (const t of activeTags) group.append(_voxcpm2LanguageOption(t));
+    select.append(group);
+  }
+  if (restTags.length) {
+    const group = document.createElement('optgroup');
+    group.label = 'All languages';
+    for (const t of restTags) group.append(_voxcpm2LanguageOption(t));
+    select.append(group);
+  }
+  select.value = tag;
+  const valueWrap = document.createElement('span');
+  valueWrap.className = 'tuning-value-wrap';
+  valueWrap.append(select);
+  row.append(labelEl, metaEl, valueWrap);
+  return row;
+}
+
+function _voxcpm2LanguageOption(tag) {
+  const option = document.createElement('option');
+  option.value = tag;
+  option.textContent = languageNameForBcp47(tag) || tag;
+  return option;
+}
+
+function voxcpm2PickerLanguageGroups() {
+  const sessionTags = [];
+  const seen = new Set();
+  for (const name of ttsPresetLanguages()) {
+    const tag = bcp47ForLanguageName(name);
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    sessionTags.push(tag);
+  }
+  const restTags = [];
+  for (const item of languages) {
+    const tag = item.bcp47;
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    restTags.push(tag);
+  }
+  restTags.sort((a, b) => (languageNameForBcp47(a) || a).localeCompare(languageNameForBcp47(b) || b));
+  return { active: sessionTags, rest: restTags };
+}
+
+function createTtsPromptInspectRows(active, tag, config) {
   const fragment = document.createDocumentFragment();
   const row = document.createElement('div');
   row.className = 'tuning-row tts-action-row';
@@ -1699,29 +1907,54 @@ function createTtsPromptInspectRows(active) {
   row.append(label, meta, valueWrap);
   fragment.append(row);
   if (state.ttsPromptInspectOpen && active) {
-    fragment.append(createVoxcpm2PromptPreview());
+    fragment.append(createVoxcpm2PromptPreview(tag, config));
   }
   return fragment;
 }
 
-function createVoxcpm2PromptPreview() {
-  const targetLanguage = currentTtsTargetLanguage();
+function createVoxcpm2PromptPreview(tag, config) {
+  const languageName = languageNameForBcp47(tag) || tag;
   const preview = document.createElement('div');
   preview.className = 'tts-prompt-preview';
   const textLabel = document.createElement('span');
   textLabel.className = 'tts-prompt-preview-label';
-  textLabel.textContent = `Text instruction for ${targetLanguage}`;
+  textLabel.textContent = `Text instruction for ${languageName}`;
   const textValue = document.createElement('code');
-  textValue.textContent = voxcpm2TextPromptPreview() || 'None';
+  textValue.textContent = voxcpm2InstructionsPreview(languageName, config);
   const sampleLabel = document.createElement('span');
   sampleLabel.className = 'tts-prompt-preview-label';
-  sampleLabel.textContent = 'Speech sample';
+  sampleLabel.textContent = 'Reference audio';
   const sampleValue = document.createElement('code');
-  sampleValue.textContent = state.ttsSettings.voxcpm2.use_input_audio_reference
-    ? `Last speech fragment from this session, max ${state.ttsSettings.voxcpm2.reference_max_duration_s || 8}s, ${voxcpm2ReferenceMatchLabel()}`
-    : 'None';
+  if (config.mode === 'reference_audio') {
+    const trim = Number.isFinite(Number(config.trim_seconds)) ? Number(config.trim_seconds) : VOXCPM2_DEFAULT_TRIM_SECONDS;
+    sampleValue.textContent = `Last speech fragment from this session, trimmed to ${trim}s.`;
+  } else {
+    sampleValue.textContent = 'None';
+  }
   preview.append(textLabel, textValue, sampleLabel, sampleValue);
   return preview;
+}
+
+function voxcpm2InstructionsPreview(languageName, config) {
+  if (config.mode === 'reference_audio') {
+    return [
+      `Speak in ${languageName}.`,
+      `Pronounce numbers, abbreviations, and short fragments in ${languageName}.`,
+      'Use the reference audio as the voice reference.',
+      `Do not infer the output language from the reference audio; the output language is ${languageName}.`,
+      'Do not copy or continue the content of the reference audio.',
+      'Speak clearly and generate only the requested text.',
+    ].join(' ');
+  }
+  const gender = VOXCPM2_GENDER_CLAUSES[config.gender] || VOXCPM2_GENDER_CLAUSES.no_preference;
+  const style = VOXCPM2_STYLE_CLAUSES[config.style] || VOXCPM2_STYLE_CLAUSES.neutral;
+  return [
+    `Speak in ${languageName}.`,
+    `Pronounce numbers, abbreviations, and short fragments in ${languageName}.`,
+    gender,
+    style,
+    'Speak clearly and generate only the requested text.',
+  ].join(' ');
 }
 
 function createTtsSelectRow({ label, value, options, disabled, meta, kind, language, emptyLabel }) {
@@ -1753,7 +1986,7 @@ function createTtsSelectRow({ label, value, options, disabled, meta, kind, langu
   return row;
 }
 
-function createTtsNumberRow({ label, value, min, max, step, unit, disabled, meta, kind }) {
+function createTtsNumberRow({ label, value, min, max, step, unit, disabled, meta, kind, language }) {
   const row = document.createElement('label');
   row.className = 'tuning-row';
   const labelEl = document.createElement('span');
@@ -1765,6 +1998,7 @@ function createTtsNumberRow({ label, value, min, max, step, unit, disabled, meta
   const input = document.createElement('input');
   input.type = 'number';
   input.dataset.ttsKind = kind;
+  if (language) input.dataset.ttsLanguage = language;
   input.min = String(min);
   input.max = String(max);
   input.step = String(step);
@@ -1783,115 +2017,65 @@ function createTtsNumberRow({ label, value, min, max, step, unit, disabled, meta
   return row;
 }
 
-function createTtsStaticRow({ label, value, meta }) {
-  const row = document.createElement('div');
-  row.className = 'tuning-row';
-  const labelEl = document.createElement('span');
-  labelEl.className = 'tuning-label';
-  labelEl.textContent = label;
-  const metaEl = document.createElement('span');
-  metaEl.className = 'tuning-meta';
-  metaEl.textContent = meta;
-  const valueEl = document.createElement('span');
-  valueEl.className = 'tts-static-value';
-  valueEl.textContent = value;
-  row.append(labelEl, metaEl, valueEl);
-  return row;
-}
-
-function voxcpm2ExtraInfoMode() {
-  if (VOXCPM2_EXTRA_INFO_OPTIONS.some((option) => option.value === state.ttsVoxcpm2ExtraInfoMode)) {
-    return state.ttsVoxcpm2ExtraInfoMode;
+function voxcpm2LanguageConfig(tag) {
+  const stored = state.ttsSettings.voxcpm2.languages?.[tag];
+  if (!stored || typeof stored !== 'object') {
+    return { ...VOXCPM2_DEFAULT_LANGUAGE_CONFIG };
   }
-  const hasDescription = ttsPresetLanguages().some((language) => {
-    const preset = state.ttsSettings.voxcpm2.voice_presets?.[language] || 'configured';
-    return preset !== 'configured';
-  });
-  const hasSample = Boolean(state.ttsSettings.voxcpm2.use_input_audio_reference);
-  if (hasDescription && hasSample) return 'both';
-  if (hasDescription) return 'description';
-  if (hasSample) return 'sample';
-  return 'none';
-}
-
-function ttsSettingsForVoxcpm2Mode(mode) {
-  const useDescription = mode === 'description' || mode === 'both';
-  const useReference = mode === 'sample' || mode === 'both';
-  const referenceMatch = validVoxcpm2ReferenceMatch(state.ttsSettings.voxcpm2.reference_match);
-  const voicePresets = {};
-  for (const language of ttsPresetLanguages()) {
-    const current = state.ttsSettings.voxcpm2.voice_presets?.[language] || 'configured';
-    if (!useDescription) {
-      voicePresets[language] = 'configured';
-    } else if (current !== 'configured') {
-      voicePresets[language] = current;
-    } else {
-      voicePresets[language] = useReference ? 'configured' : defaultVoxcpm2DescriptionPreset();
-    }
+  if (stored.mode === 'reference_audio') {
+    return {
+      mode: 'reference_audio',
+      reference_source: stored.reference_source || 'last_speech',
+      trim_seconds: Number.isFinite(Number(stored.trim_seconds))
+        ? Number(stored.trim_seconds)
+        : VOXCPM2_DEFAULT_TRIM_SECONDS,
+    };
   }
-  return { voicePresets, useReference, referenceMatch };
+  return {
+    mode: 'description',
+    gender: stored.gender || VOXCPM2_DEFAULT_LANGUAGE_CONFIG.gender,
+    style: stored.style || VOXCPM2_DEFAULT_LANGUAGE_CONFIG.style,
+  };
 }
 
-function voxcpm2DescriptionOptions() {
-  const options = state.ttsOptions.voxcpm2_voice_presets || DEFAULT_TTS_OPTIONS.voxcpm2_voice_presets;
-  if (voxcpm2ExtraInfoMode() !== 'both') {
-    return options.filter((option) => option.value !== 'configured');
+function voxcpm2ModeOptions() {
+  return state.ttsOptions.voxcpm2_modes || DEFAULT_TTS_OPTIONS.voxcpm2_modes;
+}
+
+function voxcpm2GenderOptions() {
+  return state.ttsOptions.voxcpm2_genders || DEFAULT_TTS_OPTIONS.voxcpm2_genders;
+}
+
+function voxcpm2StyleOptions() {
+  return state.ttsOptions.voxcpm2_styles || DEFAULT_TTS_OPTIONS.voxcpm2_styles;
+}
+
+function voxcpm2ReferenceSourceOptions() {
+  return state.ttsOptions.voxcpm2_reference_sources || DEFAULT_TTS_OPTIONS.voxcpm2_reference_sources;
+}
+
+function currentVoxcpm2PickerTag() {
+  const known = new Set(languages.map((item) => item.bcp47).filter(Boolean));
+  if (state.ttsVoxcpm2SelectedTag && known.has(state.ttsVoxcpm2SelectedTag)) {
+    return state.ttsVoxcpm2SelectedTag;
   }
-  return options.map((option) => {
-    if (option.value !== 'configured') return option;
-    return { ...option, label: 'From speech sample' };
-  });
+  const targetTag = bcp47ForLanguageName(currentTtsTargetLanguage());
+  if (targetTag && known.has(targetTag)) return targetTag;
+  return languages[0]?.bcp47 || 'en';
 }
 
-function defaultVoxcpm2DescriptionPreset() {
-  return voxcpm2DescriptionOptions()[0]?.value || 'neutral_clear';
+function bcp47ForLanguageName(name) {
+  const text = String(name || '').trim();
+  if (!text) return '';
+  const match = languages.find((item) => item.name === text);
+  return match?.bcp47 || '';
 }
 
-function voxcpm2TextPromptPreview() {
-  const language = currentTtsTargetLanguage();
-  const parts = [voxcpm2LanguagePrompt(language)];
-  const presetKey = state.ttsSettings.voxcpm2.voice_presets?.[language] || 'configured';
-  const option = voxcpm2PresetOption(presetKey);
-  const descriptionPrompt = String(option?.prompt || '').trim();
-  if (descriptionPrompt) parts.push(descriptionPrompt);
-  if (state.ttsSettings.voxcpm2.use_input_audio_reference) {
-    if (validVoxcpm2ReferenceMatch(state.ttsSettings.voxcpm2.reference_match) !== 'voice_and_pace') {
-      return parts.join(' ');
-    }
-    const prompt = String(state.ttsOptions.voxcpm2_reference_prompt || DEFAULT_TTS_OPTIONS.voxcpm2_reference_prompt || '').trim();
-    if (prompt && !parts.includes(prompt)) parts.push(prompt);
-  }
-  return parts.join(' ');
-}
-
-function voxcpm2LanguagePrompt(language) {
-  const safeLanguage = normalizeLanguageName(language);
-  const template = String(
-    state.ttsOptions.voxcpm2_language_prompt_template
-    || DEFAULT_TTS_OPTIONS.voxcpm2_language_prompt_template
-    || ''
-  ).trim();
-  if (template) return template.replaceAll('{target_lang}', safeLanguage);
-  return `Speak in ${safeLanguage}. Pronounce numbers, abbreviations, and short fragments in ${safeLanguage}.`;
-}
-
-function voxcpm2ReferenceMatchOptions() {
-  return state.ttsOptions.voxcpm2_reference_match_options || DEFAULT_TTS_OPTIONS.voxcpm2_reference_match_options;
-}
-
-function validVoxcpm2ReferenceMatch(value) {
-  const text = String(value || '').trim();
-  return voxcpm2ReferenceMatchOptions().some((option) => option.value === text) ? text : 'voice';
-}
-
-function voxcpm2ReferenceMatchLabel() {
-  const value = validVoxcpm2ReferenceMatch(state.ttsSettings.voxcpm2.reference_match);
-  return voxcpm2ReferenceMatchOptions().find((option) => option.value === value)?.label || 'Voice only';
-}
-
-function voxcpm2PresetOption(value) {
-  const options = state.ttsOptions.voxcpm2_voice_presets || DEFAULT_TTS_OPTIONS.voxcpm2_voice_presets;
-  return options.find((option) => option.value === value);
+function languageNameForBcp47(tag) {
+  const text = String(tag || '').trim().toLowerCase();
+  if (!text) return '';
+  const match = languages.find((item) => item.bcp47 === text);
+  return match?.name || '';
 }
 
 function normalizeTtsNumber(value, fallback, min, max) {
@@ -2165,6 +2349,17 @@ function renderTurnStream(el, parts, role, fallbackText) {
     if (part.speechState === 'spoken') row.classList.add('is-spoken');
     if (part.speechState === 'speaking') row.classList.add('is-speaking');
     renderTextStream(row, committedText, previewText);
+    if (
+      role === 'target'
+      && part.speechState === 'spoken'
+      && state.ttsSettings.enabled
+    ) {
+      const replayText = String(committedText || '').trim();
+      if (replayText) {
+        row.classList.add('is-replayable');
+        row.append(createBubbleSpeakButton(replayText, state.currentTurn.laneId));
+      }
+    }
     fragment.append(row);
   }
   if (!fragment.childNodes.length && fallbackText) {
@@ -2180,6 +2375,22 @@ function renderTurnStream(el, parts, role, fallbackText) {
     fragment.append(empty);
   }
   el.replaceChildren(fragment);
+}
+
+function createBubbleSpeakButton(text, laneId) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'bubble-speak-button';
+  button.setAttribute('aria-label', 'Speak');
+  button.title = 'Speak';
+  button.dataset.replayText = text;
+  button.dataset.replayLane = laneId;
+  button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+    + '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>'
+    + '<path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>'
+    + '<path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>'
+    + '</svg>';
+  return button;
 }
 
 function renderTextStream(el, committed, preview) {

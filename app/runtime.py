@@ -278,6 +278,9 @@ class ConversationRuntime:
         if msg_type == "translate_now":
             await self._translate_now()
             return True
+        if msg_type == "replay_tts":
+            await self._replay_tts(payload)
+            return True
         if msg_type == "update_live_settings":
             await self._update_live_settings(payload)
             return True
@@ -657,6 +660,46 @@ class ConversationRuntime:
             speech_end_ms=preview_end_ms,
             asr_debug=asr_debug,
             pc_reason="translate_now",
+        )
+
+    async def _replay_tts(self, payload: dict[str, Any]) -> None:
+        lane_id = str(payload.get("lane_id") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return
+        lane = self.lanes.get(lane_id) if lane_id else self._current_lane()
+        if lane is None:
+            return
+        if not self.tts_bridge.enabled:
+            return
+        try:
+            tts_payload = await asyncio.to_thread(
+                self.tts_bridge.synthesize,
+                session_id=self.session_id,
+                text=text,
+                language=lane.target_language,
+                reference_wav_path=_tts_reference_wav_path(lane),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._send(
+                event(
+                    "error",
+                    self.session_id,
+                    code="tts_replay_failed",
+                    message=str(exc),
+                    lane_id=lane.lane_id,
+                )
+            )
+            return
+        await self._send(
+            event(
+                "tts_replay_ready",
+                self.session_id,
+                lane_id=lane.lane_id,
+                tts=tts_payload,
+            )
         )
 
     async def _run_tts(self, lane_id: str, turn_id: str, text: str, speaking_part_ids: list[str]) -> None:
@@ -1197,7 +1240,7 @@ def _live_settings_asr_backend(live_settings: dict[str, Any] | None) -> str:
 
 
 def _tts_reference_wav_path(lane: ConversationLane) -> str | None:
-    if not tts_uses_asr_reference_wav():
+    if not tts_uses_asr_reference_wav(lane.target_language):
         return None
     path = str(lane.last_asr_wav_path or "").strip()
     if not path:

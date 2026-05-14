@@ -429,8 +429,11 @@ button {
 .settings-button svg {
   width: 20px;
   height: 20px;
-  fill: currentColor;
-  stroke: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .text-panels {
@@ -657,10 +660,13 @@ button {
 }
 
 .setup-switch-action svg {
-  width: 26px;
-  height: 26px;
-  fill: currentColor;
-  stroke: none;
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .turn-language-label {

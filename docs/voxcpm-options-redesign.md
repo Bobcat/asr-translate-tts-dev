@@ -92,17 +92,17 @@ a single key (e.g. `voxcpm2_voice_config`). Reasons:
 - Simple to read/write synchronously during render
 
 IndexedDB is not needed for the per-language voice settings themselves. We
-will need it in Phase 4 for the own-voice recording, since audio blobs do
-not belong in localStorage.
+will need it in Phase 4 for the User Voice library samples, since audio
+blobs do not belong in localStorage.
 
 The Stable Generated voice library (see below) is stored **server-side**
 because the samples are TTS-generated and shared across all users of the
 deployment.
 
-The own-voice recording (Phase 4) is **not** kept on the server long-term.
-It lives in IndexedDB on the user's device and is only uploaded for the
-duration of a session when actually needed. See the Phase 4 section for the
-full lifecycle.
+The User Voice library (Phase 4) is **not** kept on the server long-term.
+All samples in the user library live in IndexedDB on the user's device and
+are only uploaded for the duration of a session when actually needed. See
+the Phase 4 section for the full lifecycle.
 
 ---
 
@@ -226,7 +226,7 @@ Visible fields:
 
 ```
 Voice instruction     From reference audio
-Reference audio       Last speech fragment / Stable generated / Own voice later
+Reference audio       Last speech fragment / Stable generated / My library (later)
 Trim reference audio  8 seconds
 Prompt                Inspect prompt
 ```
@@ -249,8 +249,9 @@ voice" prompt.
   session. Selection logic in the next section.
 - **Stable generated** — shown but **not selectable in Phase 1**. Becomes
   selectable in Phase 2 when the Stable Generated voice library is in place.
-- **Own voice (later)** — disabled placeholder. User records their own voice
-  via a guided onboarding flow; becomes selectable in Phase 4 (see Phasing).
+- **My library (later)** — disabled placeholder. Becomes a per-user voice
+  library (samples stored on the user's device) populated by generating,
+  recording, or uploading. See Phase 4.
 
 ### Trim reference audio
 
@@ -501,11 +502,11 @@ data/voice_library/
     ...
 ```
 
-The own-voice recording (Phase 4) is **not** stored under `data/voice_library/`.
+The User Voice library (Phase 4) is **not** stored under `data/voice_library/`.
 Its lifecycle is described in the Phase 4 section: client-owned in IndexedDB,
 uploaded lazily into the session's existing TTS scratch directory
-(`data/tts/<session_id>/own_voice/`), and discarded together with the
-session.
+(`data/tts/<session_id>/user_voice_library/<sample_id>/`), and discarded
+together with the session.
 
 `meta.json` shape:
 
@@ -549,7 +550,7 @@ must be backed up.
 - Replace `voice_presets` with `gender` + `style` per language
 - Implement the language picker UI (Variant B)
 - Persist per-language config in localStorage
-- Show but disable the "Stable generated" and "Own voice (later)" options in
+- Show but disable the "Stable generated" and "My library (later)" options in
   the reference audio source picker
 
 Phase 1 is a single refactor because Phase 1a (cleanup) and Phase 1b
@@ -570,74 +571,115 @@ intermediate state.
 - Optional "advanced" toggle that exposes ref-audio + gender/style override
   combination for users who explicitly opt in
 
-### Phase 4 — Guided own-voice setup
+### Phase 4 — User Voice library
 
-A guided onboarding flow that lets the user record their own voice as a
-reference sample. The app provides a short script for the user to read aloud;
-the recording becomes a Hi-Fi cloning input (audio + ground-truth transcript).
+A per-user voice library stored on the user's device. The user can populate
+it three ways, and any sample in it can be picked as the reference audio in
+Variant B (just like the server-side Stable Generated library).
 
-Why this is a natural fit:
+This widens the earlier "Guided own-voice setup" scope: own-voice recording
+is now one of three population paths for a single shared user library, not
+a feature in its own right.
 
-- The script text is known up front, so the transcript is perfect — no ASR
-  errors propagate into the alignment.
-- The WER pipeline from Phase 2 transfers directly: run the recording through
-  ASR, compare against the script, gate on WER.
-- Hi-Fi cloning is cross-lingual. One personal sample works across all target
-  languages without re-recording per language.
+#### Sources
 
-Flow:
+1. **Generate.** Same flow as the server-side Voice library in Dev tools:
+   pick engine + language + gender, click Generate; server synthesizes from
+   the reference text, but the resulting WAV is stored on the user's
+   device and goes into the user's library rather than the shared server
+   library. Useful when the curated server samples are not to the user's
+   taste, or when the user wants per-deployment customization without
+   touching curated assets.
 
-1. User opens "Set up own voice" in TTS settings or onboarding.
-2. App shows the reference text for the user's preferred language (the same
-   reference text used by Stable Generated — see "Reference text" under
-   Stable Generated voice library).
-3. User records themselves reading the script.
-4. Recording is run through ASR; WER is compared against the script.
-5. If WER passes, the recording is saved as the user's reference sample.
-6. If WER fails, the app gives non-judgmental feedback ("Background noise
-   detected — try a quieter spot") and offers a retake. The raw WER number is
-   not exposed to the user.
+2. **Record (own voice).** Guided onboarding: the app shows the reference
+   text for a language, the user records themselves reading it (browser
+   `MediaRecorder`), the recording is run through ASR + WER gating to
+   catch noisy or mispronounced takes, and on pass it is stored in the
+   user's library. This is what the original "own voice onboarding" was.
+   Hi-Fi cloning applies as the doc described elsewhere: the recording is
+   paired with the known script text and is cross-lingual — one personal
+   sample works for any target language.
 
-### Storage and lifecycle
+3. **Upload.** The user picks an audio file from their device (file
+   input) and saves it to their library. Useful for samples sourced
+   elsewhere (other tools, a friend's recording, a sample they like).
+   No transcript is required for these — they use the reference-only
+   mode, not Hi-Fi cloning. See validation under "Open items" below.
 
-The app has no user accounts and we do not want personal recordings sitting
-on the server. The recording is therefore client-owned with a session-scoped
-server cache:
+All three end at the same place: a WAV in the user's local library,
+selectable in Variant B as the reference for a target language.
 
-1. **Persistent client storage.** The WAV plus the known script text are
-   stored in **IndexedDB** on the user's device (`voxcpm2_own_voice`).
-   localStorage is unsuitable for binary audio. Nothing personal lives on
-   the server between sessions.
-2. **Lazy server upload.** The recording is uploaded to the backend
-   **on demand**, the first time a synthesize call in this session actually
-   needs `Own voice` as the reference. Sessions where the user never uses
-   own-voice never upload the WAV.
+#### Storage and lifecycle
+
+The app has no user accounts and we do not want personal audio sitting on
+the server. The user library is therefore client-owned with a session-
+scoped server cache. The lifecycle is identical for all three sources:
+
+1. **Persistent client storage.** WAVs (plus, where available, their
+   known transcripts and source-type tag) are stored in **IndexedDB** on
+   the user's device (`voxcpm2_user_voice_library`). localStorage is
+   unsuitable for binary audio. Nothing personal lives on the server
+   between sessions.
+2. **Lazy server upload.** A library sample is uploaded to the backend
+   **on demand**, the first time a synthesize call in this session
+   actually needs that sample as the reference. Sessions where the user
+   never picks a library sample never upload it.
 3. **Session-scoped server cache.** On first use, the backend writes the
-   WAV (and immediately the NanoVLLM-VoxCPM `/encode_latents` output) into
-   the existing session scratch directory at
-   `data/tts/<session_id>/own_voice/`. Subsequent synthesize calls in the
-   same session reuse `prompt_latents_base64` from that cache instead of
-   re-uploading the audio.
-4. **Automatic discard.** The own-voice directory is cleaned up together
-   with the session via the existing `live.session_ttl_s` TTL and the
-   `TTSBridge.clear_session` path. There is no long-term server-side store
-   of personal audio.
+   WAV (and immediately the NanoVLLM-VoxCPM `/encode_latents` output)
+   into the existing session scratch directory at
+   `data/tts/<session_id>/user_voice_library/<sample_id>/`. Subsequent
+   synthesize calls in the same session reuse `prompt_latents_base64`
+   from that cache instead of re-uploading the audio.
+4. **Automatic discard.** The directory is cleaned up together with the
+   session via the existing `live.session_ttl_s` TTL and the
+   `TTSBridge.clear_session` path. There is no long-term server-side
+   store of personal audio.
 
-A new session means one re-upload + one re-encode. WAVs are large enough
-that we don't want to send them on every synthesize call, but small enough
-that one upload per session is acceptable. Re-encoding for NanoVLLM-VoxCPM
-is also a one-shot cost per session.
+A new session means one re-upload + one re-encode per sample actually
+used. WAVs are large enough that we don't want to send them on every
+synthesize call, but small enough that one upload per session is
+acceptable. Re-encoding for NanoVLLM-VoxCPM is also a one-shot cost per
+session.
 
-UX considerations:
+#### Open items
 
-- Make it optional and skippable. Reading aloud is friction.
+These need to be decided before Phase 4 is implemented:
+
+- **Granularity.** The server-side library is per (language, gender).
+  Should the user library mirror that, or can a single own-voice /
+  uploaded sample cover all languages (Hi-Fi cloning is cross-lingual)?
+  Likely: per (language, gender) for `Generate` (mirrors server library),
+  but `Record` and `Upload` can be optionally cross-lingual since one
+  voice timbre carries across languages.
+- **Source-tracking.** Each library entry records its source
+  (`generated` / `recorded` / `uploaded`) in metadata. The UI may show
+  the source as a small label so the user can distinguish samples
+  without having to listen.
+- **Server vs My library — which wins?** When both libraries have a
+  sample for the same (language, gender), the picker should show
+  "Stable generated" and "My library" as distinct options and let the
+  user choose explicitly. No automatic precedence.
+- **Upload validation.** Accept WAV as baseline; consider accepting
+  MP3/M4A with server-side conversion. Sample rate constraints can be
+  relaxed by resampling on the server. Length: 2–30 seconds typical;
+  reject silence-only files.
+- **Phase 4 UI surface.** The current Dev tools Voice library page is
+  the server-side curation surface and is hidden from end users in
+  production. The user-facing surface for Phase 4 is a separate page,
+  not yet designed — likely lives outside the dev-tools gate.
+
+#### UX considerations
+
+- Make it optional and skippable. Reading aloud (for `Record`) is friction.
 - Set expectations clearly: cloning captures voice timbre, not native
   pronunciation. A Dutch user's voice in Italian will still carry a Dutch
   accent.
-- Privacy framing for the user: "Your voice stays on your device. When you
-  start a translation session and use your voice, a copy is sent to the
-  server for that session only and is deleted when the session ends."
+- Privacy framing for the user: "Samples in your voice library stay on
+  your device. When you use one during a translation session, a copy is
+  sent to the server for that session only and is deleted when the
+  session ends."
 
-Once set, "Own voice" becomes a selectable option in the Reference audio
-source picker, alongside "Last speech fragment" and "Stable generated".
+Once any sample is in the user library, "My library" becomes a selectable
+option in the Reference audio source picker in Variant B, alongside
+"Last speech fragment" and "Stable generated".
 

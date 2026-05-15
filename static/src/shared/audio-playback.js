@@ -53,8 +53,25 @@ export class AudioQueue {
     this.render();
   }
 
+  stop() {
+    const ended = this.current;
+    this.queue = [];
+    this.current = null;
+    this.audio.pause();
+    this.audio.removeAttribute('src');
+    this.audio.load();
+    if (ended) this.onItemEnded?.(ended);
+    this.onPlaybackIdle?.();
+    this.render();
+  }
+
   hasAudio() {
     return Boolean(this.current || this.queue.length || this.audio.src);
+  }
+
+  hasNonReplayAudio() {
+    if (this.current && !this.current.replay) return true;
+    return this.queue.some((item) => !item.replay);
   }
 
   playOrResume() {

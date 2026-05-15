@@ -698,6 +698,7 @@ class ConversationRuntime:
                 "tts_replay_ready",
                 self.session_id,
                 lane_id=lane.lane_id,
+                text=text,
                 tts=tts_payload,
             )
         )

@@ -820,6 +820,38 @@ button {
 .target-pane .turn-part.is-replayable {
   position: relative;
   padding-right: 40px;
+  padding-bottom: 20px;
+}
+
+.target-pane .turn-part.is-replay-flash {
+  background: var(--border);
+}
+
+.tts-warning-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-left: 3px solid hsl(38, 92%, 50%);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.tts-warning-row svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: hsl(38, 92%, 50%);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
 }
 
 .bubble-speak-button {
@@ -851,6 +883,10 @@ button {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.bubble-speak-button.is-stop svg rect {
+  fill: currentColor;
 }
 
 .turn-part.is-speaking {
@@ -929,15 +965,15 @@ button {
   transform: scale(0.93);
 }
 
+.round-action.is-busy {
+  background: var(--accent);
+}
+
 .round-action:disabled {
   cursor: default;
   background: var(--muted);
   opacity: 0.32;
   transform: none;
-}
-
-.round-action.is-busy {
-  background: var(--accent);
 }
 
 .round-action-icon {

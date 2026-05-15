@@ -344,6 +344,9 @@ const state = {
   voiceLibraryEngine: '',
   voiceLibraryLanguageTag: '',
   voiceLibraryGender: 'female',
+  speakNowPending: false,
+  speakNowPendingTimer: null,
+  audioPlayback: null,
 };
 
 let audioQueue;
@@ -361,13 +364,17 @@ audioQueue = new AudioQueue({
     }
     updateActionButtons();
   },
-  onPlaybackStart: () => {
+  onPlaybackStart: (item) => {
     state.captureMutedForPlayback = true;
+    state.audioPlayback = item || null;
     renderStatus('speaking');
+    renderTranscript();
   },
   onPlaybackIdle: () => {
     state.captureMutedForPlayback = false;
+    state.audioPlayback = null;
     renderStatus(state.sessionState === SESSION_STATES.RUNNING ? 'listening' : state.status);
+    renderTranscript();
   },
   onPlaybackComplete: () => {
     if (state.sessionState !== SESSION_STATES.RUNNING || state.micState !== MIC_STATES.LISTENING) return;
@@ -614,11 +621,31 @@ function stopMicrophoneCapture({ statusText = 'Mic off' } = {}) {
 
 function speakNow() {
   if (state.sessionState !== SESSION_STATES.RUNNING) return;
-  if (audioQueue.hasAudio()) {
+  if (audioQueue.hasNonReplayAudio()) {
     audioQueue.playOrResume();
     return;
   }
   if (state.currentTurn.speakableTargetText && state.currentTurn.state !== TURN_STATES.OPEN_SPEAKING && state.socket?.speakNow()) {
+    state.speakNowPending = true;
+    if (state.speakNowPendingTimer) clearTimeout(state.speakNowPendingTimer);
+    state.speakNowPendingTimer = setTimeout(() => {
+      state.speakNowPending = false;
+      state.speakNowPendingTimer = null;
+      updateActionButtons();
+    }, 1500);
+    if (state.micState === MIC_STATES.LISTENING) {
+      stopMicrophoneCapture({ statusText: 'Mic off' });
+    }
+    updateActionButtons();
+  }
+}
+
+function clearSpeakNowPending() {
+  if (!state.speakNowPending && !state.speakNowPendingTimer) return;
+  state.speakNowPending = false;
+  if (state.speakNowPendingTimer) {
+    clearTimeout(state.speakNowPendingTimer);
+    state.speakNowPendingTimer = null;
   }
 }
 
@@ -748,6 +775,7 @@ function handleMessage(msg) {
         laneId: msg.lane_id,
         artifactId: msg.tts.artifact_id,
         replay: true,
+        replayText: String(msg.text || ''),
       });
     }
     updateActionButtons();
@@ -808,6 +836,7 @@ function applyTurnUpdate(msg) {
   }
   const previousLaneId = currentLaneId();
   applyCurrentTurn(msg.current_turn || state.currentTurn);
+  clearSpeakNowPending();
   const laneChanged = previousLaneId !== currentLaneId();
   if (laneChanged || msg.reason === 'clear_turn' || msg.reason === 'next_turn') {
     audioQueue.clear();
@@ -930,11 +959,11 @@ function updateSpeakNowButton() {
   const turnIsSpeaking = state.currentTurn.state === TURN_STATES.OPEN_SPEAKING;
   const live = state.sessionState === SESSION_STATES.RUNNING && state.socket?.isOpen();
   const canSpeakTarget = Boolean(live && state.currentTurn.speakableTargetText && !turnIsSpeaking);
-  const canPlayAudio = Boolean(live && audioQueue?.hasAudio());
-  els.speakNowButton.disabled = !(canSpeakTarget || canPlayAudio);
+  const canPlayAudio = Boolean(live && audioQueue?.hasNonReplayAudio());
+  els.speakNowButton.disabled = state.speakNowPending || !(canSpeakTarget || canPlayAudio);
   els.speakNowButton.classList.toggle('is-busy', turnIsSpeaking);
   let label = 'Speak now';
-  if (state.audioStatus.startsWith('Playing')) {
+  if (canPlayAudio && state.audioStatus.startsWith('Playing')) {
     label = 'Playing';
   } else if (canPlayAudio) {
     label = 'Play audio';
@@ -1876,16 +1905,33 @@ function syncVoxcpm2VoiceConfigToBackend() {
 function handleTargetTextClick(event) {
   const button = event.target?.closest?.('.bubble-speak-button');
   if (button && els.targetText.contains(button)) {
-    triggerReplayFromButton(button);
+    handleBubbleAudioAction(button, button.closest('.turn-part'));
     return;
   }
   if (window.matchMedia?.('(pointer: coarse)').matches) {
     const row = event.target?.closest?.('.turn-part.is-replayable');
     if (row && els.targetText.contains(row)) {
       const innerButton = row.querySelector('.bubble-speak-button');
-      if (innerButton) triggerReplayFromButton(innerButton);
+      if (innerButton) handleBubbleAudioAction(innerButton, row);
     }
   }
+}
+
+function handleBubbleAudioAction(button, bubble) {
+  const action = button.dataset.audioAction || 'replay';
+  if (action === 'stop') {
+    flashReplayBubble(bubble);
+    audioQueue.stop();
+    return;
+  }
+  flashReplayBubble(bubble);
+  triggerReplayFromButton(button);
+}
+
+function flashReplayBubble(bubble) {
+  if (!bubble) return;
+  bubble.classList.add('is-replay-flash');
+  setTimeout(() => bubble.classList.remove('is-replay-flash'), 200);
 }
 
 function triggerReplayFromButton(button) {
@@ -2109,6 +2155,7 @@ function voxcpm2TtsRows(backend) {
       language: tag,
       emptyLabel: 'Neutral',
     }));
+    rows.push(createDescriptionModeWarningRow());
   } else {
     rows.push(createTtsSelectRow({
       label: 'Reference audio',
@@ -2154,6 +2201,20 @@ function voxcpm2TtsRows(backend) {
   }
   rows.push(createTtsPromptInspectRows(active, tag, config));
   return rows;
+}
+
+function createDescriptionModeWarningRow() {
+  const row = document.createElement('div');
+  row.className = 'tts-warning-row';
+  row.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+    + '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>'
+    + '<path d="M12 9v4"/>'
+    + '<path d="M12 17h.01"/>'
+    + '</svg>';
+  const text = document.createElement('span');
+  text.textContent = 'Voice description is experimental. Output can differ noticeably from the prompt. Fine for tinkering, not reliable for serious use.';
+  row.append(text);
+  return row;
 }
 
 function createStableSampleStatusRow({ tag, gender, meta }) {
@@ -2723,15 +2784,22 @@ function renderTurnStream(el, parts, role, fallbackText) {
     if (part.speechState === 'spoken') row.classList.add('is-spoken');
     if (part.speechState === 'speaking') row.classList.add('is-speaking');
     renderTextStream(row, committedText, previewText);
-    if (
-      role === 'target'
-      && part.speechState === 'spoken'
-      && state.ttsSettings.enabled
-    ) {
+    if (role === 'target' && state.ttsSettings.enabled) {
       const replayText = String(committedText || '').trim();
-      if (replayText) {
+      const playing = state.audioPlayback;
+      const isStopForThis = Boolean(
+        playing && (
+          (!playing.replay && part.speechState === 'speaking')
+          || (playing.replay && part.speechState === 'spoken' && replayText && replayText === String(playing.replayText || ''))
+        ),
+      );
+      if (isStopForThis) {
         row.classList.add('is-replayable');
-        row.append(createBubbleSpeakButton(replayText, state.currentTurn.laneId));
+        row.classList.add('is-playing-audio');
+        row.append(createBubbleSpeakButton(replayText, state.currentTurn.laneId, 'stop'));
+      } else if (part.speechState === 'spoken' && replayText) {
+        row.classList.add('is-replayable');
+        row.append(createBubbleSpeakButton(replayText, state.currentTurn.laneId, 'replay'));
       }
     }
     fragment.append(row);
@@ -2751,19 +2819,31 @@ function renderTurnStream(el, parts, role, fallbackText) {
   el.replaceChildren(fragment);
 }
 
-function createBubbleSpeakButton(text, laneId) {
+function createBubbleSpeakButton(text, laneId, mode = 'replay') {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'bubble-speak-button';
-  button.setAttribute('aria-label', 'Speak');
-  button.title = 'Speak';
   button.dataset.replayText = text;
   button.dataset.replayLane = laneId;
-  button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
-    + '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>'
-    + '<path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>'
-    + '<path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>'
-    + '</svg>';
+  if (mode === 'stop') {
+    button.classList.add('is-stop');
+    button.dataset.audioAction = 'stop';
+    button.setAttribute('aria-label', 'Stop playback');
+    button.title = 'Stop';
+    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+      + '<circle cx="12" cy="12" r="10"/>'
+      + '<rect x="9" y="9" width="6" height="6" rx="1"/>'
+      + '</svg>';
+  } else {
+    button.dataset.audioAction = 'replay';
+    button.setAttribute('aria-label', 'Speak');
+    button.title = 'Speak';
+    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+      + '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>'
+      + '<path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>'
+      + '<path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>'
+      + '</svg>';
+  }
   return button;
 }
 

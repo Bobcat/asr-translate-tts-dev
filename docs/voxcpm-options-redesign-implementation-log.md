@@ -51,14 +51,17 @@ In scope and shipped:
 - Audio settings (Variant B) gets a `Voice gender` row and a read-only
   status line when `Stable generated` is the picked source.
 
-Out of scope for Phase 2a, deferred to Phase 2b:
+Out of scope for Phase 2a:
 
-- TTS → ASR → WER pipeline with N candidates per (language, gender).
-- `wer_score`, `asr_backend`, `duration_s` in `meta.json`.
-- NanoVLLM-VoxCPM `/encode_latents` caching (currently re-encodes per
-  call when reference audio is used).
 - Hi-Fi cloning via `prompt_text` + `prompt_wav_path` (we send only the
-  reference WAV, no paired transcript yet).
+  reference WAV, no paired transcript yet). Deferred to Phase 2b.
+- NanoVLLM-VoxCPM `/encode_latents` caching (currently re-encodes per
+  call when reference audio is used). Deferred to Phase 2b.
+- TTS → ASR → WER auto-picking pipeline. **Dropped from the plan** as
+  of 2026-05-15 — see Deviation #2.
+- A/B holdover for the regenerate flow (keep the previous sample
+  alongside the latest so the user can roll back one step before
+  committing). New UX, planned but not yet built — see Open items.
 
 ### Phase 3 — Power user mode
 
@@ -94,21 +97,26 @@ user wanted a clean binary choice for now. Documented intent to revisit.
 **Status.** Reversible. Re-adding `no_preference` is a tuple entry plus
 default change plus the prompt clause string.
 
-### 2. Skipped Phase 2 WER pipeline (Phase 2a is manual curation)
+### 2. ASR/WER auto-picking dropped from the plan
 
-**What.** The doc specifies that Stable Generated samples are produced
-by generating N candidates, running each through ASR, scoring on WER,
-and saving the lowest-WER candidate with `wer_score` in `meta.json`.
-The shipped generator produces one sample per click and trusts the
-user's ear.
+**What.** The original doc specified that Stable Generated samples are
+produced by generating N candidates, running each through ASR, scoring
+on WER, and saving the lowest-WER candidate with `wer_score` in
+`meta.json`. The shipped generator produces one sample per click and
+trusts the user's ear. As of 2026-05-15 the doc itself was revised to
+remove this pipeline from the plan entirely.
 
-**Why.** For a small sample matrix (10 languages × 2 genders), the
-quality-control infrastructure is overkill. Manual review is faster and
-the user judges acceptability directly via the Play button after
-generation.
+**Why.** WER measures whether the TTS pronounced the script
+intelligibly, not whether the *voice* sounds the way the user wants.
+For our small sample matrix the user's ear is the actual quality
+signal; an automated WER picker would mostly choose between equally
+intelligible candidates that differ in subjective qualities WER cannot
+see. Additionally, the user's regenerate-until-satisfied flow benefits
+more from A/B holdover (keeping the previous sample one step back)
+than from automated scoring — see Open items.
 
-**Status.** Deferred to Phase 2b. The current `meta.json` shape is a
-strict subset of the doc's shape, so extending it is additive.
+**Status.** Removed from the plan. `wer_score` and `asr_backend` are
+gone from the `meta.json` shape in the doc.
 
 ### 3. Hi-Fi cloning not wired
 
@@ -261,9 +269,15 @@ the backend (`_SEGMENT_DEBUG_KEYS`, `_segment_debug_payload`,
 
 Carry-over work for future rounds, in rough order of likely priority:
 
-- **Phase 2b**: WER pipeline, latent caching, Hi-Fi cloning with
-  per-source transcript handling, expanded `meta.json` (`wer_score`,
-  `asr_backend`, `duration_s`).
+- **Phase 2b**: Hi-Fi cloning (paired transcript at synth time, with
+  ASR-transcript for `last_speech` and generation-text for
+  `stable_generated`) plus NanoVLLM-VoxCPM latent caching as the
+  perf optimization for it. WER auto-picking is no longer part of
+  this phase — see Deviation #2.
+- **A/B holdover for the regenerate flow.** Keep the previous sample
+  one step back during a Voice library session, with an explicit
+  "Keep" action to commit Latest to Saved. Small UX addition; see
+  the Generation UX subsection in the design doc.
 - **Phase 4 (widened)**: implement the User Voice library with three
   sources. Decide the open items currently listed in the design doc's
   Phase 4 section before starting.

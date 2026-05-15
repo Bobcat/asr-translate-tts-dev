@@ -325,8 +325,7 @@ the transcript:
   already filters out the worst fragments.
 - **Stable Generated** — use the **original generation text** (the script we
   fed to TTS to create the sample). It is the ground truth and avoids
-  propagating ASR errors. The ASR transcript of the generated sample is only
-  used for the WER quality check at generation time, not at inference.
+  propagating ASR errors.
 
 Hi-Fi mode is the recommended default whenever a reference audio is used. If
 the model output regresses for some languages, we can fall back to
@@ -412,8 +411,8 @@ Scope and reuse:
 
 - One text per supported target language.
 - The same text is used by Stable Generated (TTS reads it) and Phase 4 (the
-  user reads it). Both need a known script that ASR can score against;
-  reusing one text per language keeps things consistent and saves work.
+  user reads it). Reusing one text per language keeps things consistent
+  and means we curate one paragraph instead of two per language.
 
 Generation: feed the following prompt to a frontier LLM, once per language,
 review the output, and commit it to the repo.
@@ -421,9 +420,9 @@ review the output, and commit it to the repo.
 ```
 Produce one short paragraph in {language} that will be used as a voice setup
 script. It will be (a) fed to a TTS model to generate a reference audio
-sample, and (b) read aloud by a human user during onboarding. The same
-paragraph is then run through ASR and scored against the original text to
-gauge quality.
+sample, and (b) read aloud by a human user during onboarding. The paragraph
+also serves as the ground-truth transcript paired with the generated audio
+for Hi-Fi cloning at inference time.
 
 Constraints:
 - Natural, everyday wording. No pangram-style sentences ("the quick brown
@@ -432,8 +431,7 @@ Constraints:
   on the language).
 - Neutral content: no strong emotion, no domain-specific jargon, no proper
   nouns of people or places.
-- No numerals, no abbreviations, no acronyms — TTS handles those unreliably
-  and they would muddy the ASR comparison.
+- No numerals, no abbreviations, no acronyms — TTS handles those unreliably.
 - Self-contained: do not reference outside context.
 
 Return the paragraph as a downloadable text file named `<lang_tag>.txt`,
@@ -454,13 +452,39 @@ Reference texts live as plain `.txt` files in the repo under
 ### Generation flow (Dev tools)
 
 1. User opens Dev tools → "Voice library".
-2. Picks a language and gender.
+2. Picks an engine, a language, and a gender.
 3. Backend reads the reference text for that language.
-4. Backend generates `N` candidate samples from the reference text.
-5. Each candidate is run through ASR.
-6. Candidates are scored on **WER** against the reference text.
-7. The lowest-WER candidate is saved as the stable sample for that
-   (language, gender) pair.
+4. Backend generates **one** sample from the reference text and returns it.
+5. UI auto-plays the new sample so the user can judge it immediately.
+6. User keeps regenerating until satisfied; the previous saved sample
+   remains the committed one until they explicitly commit a replacement.
+
+We do not score generated samples with ASR/WER. WER measures whether the
+TTS pronounced the script intelligibly, not whether the *voice* sounds
+the way the user wants. For our small sample matrix the user's ear is
+the actual quality signal; an automated WER picker would mostly choose
+between equally intelligible candidates that differ in subjective
+qualities WER cannot see.
+
+### A/B holdover
+
+Regeneration is iterative: the user often clicks Generate several times,
+then realizes the previous sample was better. To support this, the
+generator keeps the previously generated sample alongside the latest one
+during the session:
+
+- **Saved**: the sample currently on disk at `<lang>/<gender>/audio.wav`
+  (the one TTS actually uses). Updated only by an explicit "Keep" action.
+- **Latest**: the most recent generated sample. In-memory or in a sibling
+  scratch file during the Dev tools session. Plays via the inline play
+  button next to the Generate row.
+- **Previous**: the prior "Latest" before the current Generate replaced
+  it. Held for one step so the user can roll back one regenerate.
+
+Each Generate click slides Latest → Previous and produces a fresh
+Latest. The Keep action commits Latest to Saved (overwrites
+`audio.wav` and `meta.json`). The Previous slot resets when the user
+navigates away from the page.
 
 ### Trigger
 
@@ -519,10 +543,8 @@ together with the session.
   "language": "pt-br",
   "gender": "female",
   "reference_text": "<exact text fed to TTS>",
-  "wer_score": 0.08,
   "tts_backend": "nanovllm_voxcpm",
   "tts_model_id": "voxcpm2-0.5b",
-  "asr_backend": "whisperx",
   "generated_at": "2026-05-14T12:34:56Z",
   "duration_s": 9.2
 }
@@ -563,8 +585,9 @@ intermediate state.
 
 ### Phase 2 — Stable Generated library
 
-- Backend: TTS → ASR → WER pipeline
-- Dev tools UI: per-(language, gender) generate button + progress
+- Backend: TTS generator + per (language, gender) sample storage
+- Dev tools UI: per-(language, gender) generate button with auto-play
+  preview and A/B holdover (see Generation UX above)
 - Enable "Stable generated" option in the reference audio picker
 - Storage of the audio files server-side
 
@@ -597,12 +620,12 @@ a feature in its own right.
 
 2. **Record (own voice).** Guided onboarding: the app shows the reference
    text for a language, the user records themselves reading it (browser
-   `MediaRecorder`), the recording is run through ASR + WER gating to
-   catch noisy or mispronounced takes, and on pass it is stored in the
-   user's library. This is what the original "own voice onboarding" was.
-   Hi-Fi cloning applies as the doc described elsewhere: the recording is
-   paired with the known script text and is cross-lingual — one personal
-   sample works for any target language.
+   `MediaRecorder`), the user listens back and either keeps the take or
+   re-records. Basic sanity checks (minimum duration, not silence-only,
+   not absurdly long) gate the save, but no ASR/WER pipeline — the user's
+   own ear decides. Hi-Fi cloning applies as the doc described elsewhere:
+   the recording is paired with the known script text and is cross-lingual
+   — one personal sample works for any target language.
 
 3. **Upload.** The user picks an audio file from their device (file
    input) and saves it to their library. Useful for samples sourced

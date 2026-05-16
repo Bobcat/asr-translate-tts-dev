@@ -420,12 +420,12 @@ async function init() {
   els.dockSettingsButton.addEventListener('click', openSettingsSheet);
   els.titlebarBackButton.addEventListener('click', finishSession);
   els.settingsBackButton.addEventListener('click', handleSettingsBack);
-  els.settingsMicrophoneNav.addEventListener('click', () => setSettingsPage('microphone'));
-  els.settingsAudioNav.addEventListener('click', () => setSettingsPage('audio'));
-  els.settingsHistoryNav.addEventListener('click', () => setSettingsPage('history'));
-  els.settingsDevToolsNav.addEventListener('click', () => setSettingsPage('dev-tools'));
-  els.settingsTuningNav.addEventListener('click', () => setSettingsPage('tuning'));
-  els.settingsVoiceLibraryNav.addEventListener('click', () => setSettingsPage('voice-library'));
+  els.settingsMicrophoneNav.addEventListener('click', () => navigateSettingsPage('microphone'));
+  els.settingsAudioNav.addEventListener('click', () => navigateSettingsPage('audio'));
+  els.settingsHistoryNav.addEventListener('click', () => navigateSettingsPage('history'));
+  els.settingsDevToolsNav.addEventListener('click', () => navigateSettingsPage('dev-tools'));
+  els.settingsTuningNav.addEventListener('click', () => navigateSettingsPage('tuning'));
+  els.settingsVoiceLibraryNav.addEventListener('click', () => navigateSettingsPage('voice-library'));
   els.voiceLibraryControls.addEventListener('change', handleVoiceLibraryChange);
   els.voiceLibraryControls.addEventListener('click', handleVoiceLibraryClick);
   els.devToolsShowPcExport.addEventListener('change', handleDevToolsShowPcExportChange);
@@ -899,13 +899,22 @@ function syncSessionHistory(previous, next) {
   }
 }
 
-function handlePopstateBack() {
+function handlePopstateBack(event) {
   if (_skipLanguageSheetPopstate) {
     _skipLanguageSheetPopstate = false;
     return;
   }
   if (!els.languageSheet.hidden) {
     closeLanguageSheet();
+    return;
+  }
+  if (!els.settingsSheet.hidden) {
+    const newState = event?.state;
+    if (newState?.view === 'settingsSheet' && newState.page) {
+      setSettingsPage(newState.page);
+    } else {
+      els.settingsSheet.hidden = true;
+    }
     return;
   }
   if (state.sessionState !== SESSION_STATES.RUNNING) return;
@@ -1020,28 +1029,38 @@ function setStatus(status) {
 }
 
 function openSettingsSheet() {
+  if (!els.settingsSheet.hidden) return;
   els.settingsSheet.hidden = false;
   setSettingsPage('home');
   renderAudioSettings();
   renderTuningSettings();
   renderTtsSettings();
   renderHistorySettings();
+  history.pushState({ view: 'settingsSheet', page: 'home' }, '');
 }
 
 function closeSettingsSheet() {
+  if (els.settingsSheet.hidden) return;
+  if (history.state?.view === 'settingsSheet') {
+    history.back();
+    return;
+  }
   els.settingsSheet.hidden = true;
 }
 
+function navigateSettingsPage(page) {
+  if (history.state?.view === 'settingsSheet' && history.state.page !== page) {
+    history.pushState({ view: 'settingsSheet', page }, '');
+  }
+  setSettingsPage(page);
+}
+
 function handleSettingsBack() {
-  if (state.settingsPage === 'home') {
-    closeSettingsSheet();
+  if (history.state?.view === 'settingsSheet') {
+    history.back();
     return;
   }
-  if (state.settingsPage === 'tuning' || state.settingsPage === 'voice-library') {
-    setSettingsPage('dev-tools');
-    return;
-  }
-  setSettingsPage('home');
+  els.settingsSheet.hidden = true;
 }
 
 function setSettingsPage(page) {

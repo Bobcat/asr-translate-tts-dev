@@ -1,7 +1,7 @@
 :root {
   --bg: hsl(210, 20%, 98%);
   --surface: hsl(0, 0%, 100%);
-  --surface-soft: hsl(210, 40%, 98%);
+  --surface-soft: hsl(210, 40%, 95%);
   --panels-bg: hsl(220, 15%, 91%);
   --text: hsl(215, 25%, 17%);
   --text-strong: hsl(215, 25%, 17%);
@@ -50,7 +50,7 @@
     --bg: hsl(220, 16%, 8%);
     --panels-bg: hsl(220, 16%, 7%);
     --surface: hsl(220, 14%, 11%);
-    --surface-soft: hsl(220, 12%, 14%);
+    --surface-soft: hsl(220, 12%, 16%);
     --text: hsl(220, 10%, 88%);
     --text-strong: hsl(220, 10%, 95%);
     --muted: hsl(220, 8%, 52%);
@@ -160,6 +160,8 @@ button {
   grid-column: 1;
   justify-self: start;
   display: none;
+  color: var(--text);
+  opacity: 1;
 }
 
 .app.is-running .titlebar-back-button {
@@ -204,22 +206,23 @@ button {
 }
 
 .language-pill {
-  width: 110px;
-  min-width: 110px;
-  max-width: 110px;
+  width: 140px;
+  min-width: 140px;
+  max-width: 140px;
   height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0 12px;
+  border: 0;
   border-radius: 8px;
-  background-color: var(--surface-soft);
+  background-color: var(--surface);
   color: var(--text);
   font-size: 0.85rem;
   font-weight: 600;
   line-height: 1.2;
   box-shadow: 0 1px 2px hsla(222, 47%, 11%, 0.06);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+  transition: background-color 0.15s ease;
 }
 
 .language-pill-text {
@@ -241,26 +244,17 @@ button {
   flex-shrink: 0;
 }
 
-.language-pill:hover {
-  border-color: var(--border-hover);
-  background-color: var(--surface);
-}
-
 .language-pill:active {
   background-color: var(--border);
 }
 
 .language-pill:focus {
   outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(var(--primary-rgb), 0.2);
-  background-color: var(--surface);
 }
 
 .language-pill:disabled {
   cursor: default;
   background-color: transparent;
-  border-color: transparent;
   box-shadow: none;
 }
 
@@ -435,7 +429,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 0;
+  padding: 0;
   background: var(--surface);
 }
 
@@ -456,9 +450,7 @@ button {
   letter-spacing: 0.03em;
 }
 
-.lane-swap-button:hover,
 .lane-swap-button:focus-visible {
-  border-color: var(--border-hover);
   outline: none;
 }
 
@@ -532,13 +524,6 @@ button {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.source-pane,
-.source-pane .pane-body,
-.source-pane .setup-start-panel,
-.source-pane .text-stream {
-  background: var(--surface);
 }
 
 .pane-language-pill {
@@ -616,17 +601,9 @@ button {
   display: none;
 }
 
-.pane-body {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 .setup-start-panel {
-  flex: 1;
-  min-height: 0;
+  position: absolute;
+  inset: 0;
   display: grid;
   align-content: center;
   justify-items: center;
@@ -691,10 +668,12 @@ button {
 }
 
 .text-stream {
+  --bubble-pad-y: 8px;
+  --bubble-pad-x: 12px;
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 20px;
+  padding: 0.5rem 0.4rem;
   font-family: var(--ui-font);
   font-size: 1rem;
   font-weight: 400;
@@ -704,32 +683,27 @@ button {
   scrollbar-gutter: stable;
 }
 
-.source-pane .text-stream { padding-bottom: 0; }
-.target-pane .text-stream { padding-top: 0; }
+.text-stream[data-clip-top="on"] {
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+}
 
 .empty-state {
+  padding: var(--bubble-pad-y) var(--bubble-pad-x);
   color: var(--empty-state);
   font-style: normal;
   font-weight: 400;
 }
 
 .turn-part + .turn-part {
-  margin-top: 0.7rem;
+  margin-top: 0.4rem;
 }
 
 .turn-part {
-  padding: 8px 12px;
+  padding: var(--bubble-pad-y) var(--bubble-pad-x);
   border-radius: 10px;
   background: var(--surface-soft);
   transition: background-color 0.15s ease;
-}
-
-.source-pane .turn-part {
-  background: var(--surface);
-}
-
-.source-pane .turn-part:active {
-  background: var(--surface-soft);
 }
 
 .turn-part.is-spoken {
@@ -790,7 +764,6 @@ button {
 
 .bubble-speak-button:hover,
 .bubble-speak-button:focus-visible {
-  background: var(--surface);
   color: var(--text);
   outline: none;
 }
@@ -1251,7 +1224,7 @@ button {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  color: var(--muted);
+  color: var(--text);
   font: inherit;
   overflow: hidden;
   text-overflow: ellipsis;

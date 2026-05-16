@@ -373,6 +373,8 @@ audioQueue = new AudioQueue({
   },
   onItemEnded: (item) => {
     if (item.replay) return;
+    const speakingPart = (state.currentTurn?.parts || []).find((p) => p.speechState === 'speaking');
+    if (speakingPart) speakingPart.speechState = 'spoken';
     state.socket?.ttsPlaybackComplete({
       laneId: item.laneId,
       turnId: item.turnId,
@@ -898,6 +900,14 @@ function syncSessionHistory(previous, next) {
 }
 
 function handlePopstateBack() {
+  if (_skipLanguageSheetPopstate) {
+    _skipLanguageSheetPopstate = false;
+    return;
+  }
+  if (!els.languageSheet.hidden) {
+    closeLanguageSheet();
+    return;
+  }
   if (state.sessionState !== SESSION_STATES.RUNNING) return;
   _skipHistorySync = true;
   try {
@@ -2633,12 +2643,22 @@ function openLanguageSheet(side) {
   els.languageSearch.value = '';
   renderLanguageSheetList(currentLang, '');
   els.languageSheet.hidden = false;
+  if (history.state?.view !== 'languageSheet') {
+    history.pushState({ view: 'languageSheet' }, '');
+  }
 }
 
+let _skipLanguageSheetPopstate = false;
+
 function closeLanguageSheet() {
+  const wasOpen = !els.languageSheet.hidden;
   els.languageSheet.hidden = true;
   els.languageSearch.value = '';
   _resetLanguageSheetPosition();
+  if (wasOpen && history.state?.view === 'languageSheet') {
+    _skipLanguageSheetPopstate = true;
+    history.back();
+  }
 }
 
 function _resetLanguageSheetPosition() {
@@ -2998,9 +3018,15 @@ function flagForLanguage(name) {
 function setupAutoFollow(el) {
   if (!el) return;
   enableAutoFollow(el);
+  updateClipTop(el);
   el.addEventListener('scroll', () => {
     el.dataset.autofollow = isNearBottom(el) ? 'on' : 'off';
+    updateClipTop(el);
   });
+}
+
+function updateClipTop(el) {
+  el.dataset.clipTop = el.scrollTop > 0 ? 'on' : 'off';
 }
 
 function enableTranscriptAutoFollow() {

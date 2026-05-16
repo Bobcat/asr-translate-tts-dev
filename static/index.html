@@ -14,7 +14,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=20260516-ui-tweaks-13">
+    <link rel="stylesheet" href="/styles.css?v=20260516-ui-tweaks-32">
   </head>
   <body>
     <main class="app is-setup">
@@ -36,18 +36,7 @@
       </header>
       <section class="text-panels" aria-live="polite">
         <article class="pane source-pane">
-          <div class="pane-body">
-            <div class="setup-start-panel" id="setupStartPanel">
-              <button class="setup-start-button" id="startButton" type="button" title="Start" aria-label="Start">
-                <svg class="setup-start-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-                  <line x1="12" y1="19" x2="12" y2="22"></line>
-                </svg>
-              </button>
-            </div>
-            <div class="text-stream" id="sourceText" data-empty="No speech recognized yet"></div>
-          </div>
+          <div class="text-stream" id="sourceText" data-empty="No speech recognized yet"></div>
         </article>
         <div class="pane lane-divider">
           <button class="lane-swap-button" id="swapButton" type="button" aria-label="Swap direction" title="Swap direction">
@@ -64,6 +53,15 @@
         <article class="pane target-pane">
           <div class="text-stream" id="targetText" data-empty="No translation yet"></div>
         </article>
+        <div class="setup-start-panel" id="setupStartPanel">
+          <button class="setup-start-button" id="startButton" type="button" title="Start" aria-label="Start">
+            <svg class="setup-start-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="22"></line>
+            </svg>
+          </button>
+        </div>
       </section>
 
       <footer class="action-dock">
@@ -285,6 +283,6 @@
       </div>
 
     </main>
-    <script type="module" src="/src/app.js?v=20260516-ui-tweaks-13"></script>
+    <script type="module" src="/src/app.js?v=20260516-ui-tweaks-32"></script>
   </body>
 </html>

@@ -448,6 +448,19 @@ async function init() {
     closeSettingsSheet();
   });
   window.addEventListener('popstate', handlePopstateBack);
+  setupSheetSwipeClose({
+    layer: els.languageSheet,
+    sheet: els.languageSheet.querySelector('.bottom-sheet'),
+    scrollContainer: els.languageSheetList,
+    onClose: closeLanguageSheet,
+  });
+  setupSheetSwipeClose({
+    layer: els.settingsSheet,
+    sheet: els.settingsSheet.querySelector('.bottom-sheet'),
+    scrollContainer: els.settingsSheet.querySelector('.settings-views'),
+    onClose: closeSettingsSheet,
+    isAllowed: () => state.settingsPage === 'home',
+  });
   if (history.state?.view === 'running') {
     history.replaceState({}, '');
   }
@@ -913,8 +926,10 @@ function handlePopstateBack(event) {
   if (!els.settingsSheet.hidden) {
     const newState = event?.state;
     if (newState?.view === 'settingsSheet' && newState.page) {
+      _settingsSheetDepth = Math.max(1, _settingsSheetDepth - 1);
       setSettingsPage(newState.page);
     } else {
+      _settingsSheetDepth = 0;
       els.settingsSheet.hidden = true;
     }
     return;
@@ -1030,6 +1045,8 @@ function setStatus(status) {
   updateActionButtons();
 }
 
+let _settingsSheetDepth = 0;
+
 function openSettingsSheet() {
   if (!els.settingsSheet.hidden) return;
   els.settingsSheet.hidden = false;
@@ -1039,12 +1056,16 @@ function openSettingsSheet() {
   renderTtsSettings();
   renderHistorySettings();
   history.pushState({ view: 'settingsSheet', page: 'home' }, '');
+  _settingsSheetDepth = 1;
 }
 
 function closeSettingsSheet() {
+  // Scrim tap / Escape / swipe-down: pop ALL settings levels at once.
   if (els.settingsSheet.hidden) return;
-  if (history.state?.view === 'settingsSheet') {
-    history.back();
+  if (_settingsSheetDepth > 0) {
+    const depth = _settingsSheetDepth;
+    _settingsSheetDepth = 0;
+    history.go(-depth);
     return;
   }
   els.settingsSheet.hidden = true;
@@ -1053,11 +1074,13 @@ function closeSettingsSheet() {
 function navigateSettingsPage(page) {
   if (history.state?.view === 'settingsSheet' && history.state.page !== page) {
     history.pushState({ view: 'settingsSheet', page }, '');
+    _settingsSheetDepth += 1;
   }
   setSettingsPage(page);
 }
 
 function handleSettingsBack() {
+  // In-sheet back arrow and browser back: pop one level only.
   if (history.state?.view === 'settingsSheet') {
     history.back();
     return;
@@ -2625,6 +2648,16 @@ function hideVadHint() {
   els.vadBadge.hidden = true;
 }
 
+function levelToHaloUnit(level) {
+  // Visual-only gain so the halo stays responsive on devices that hand back
+  // very low raw peaks (older iPhones, web audio with internal AGC).
+  const visual = Math.min(1, level * 8);
+  if (visual <= 0) return 0;
+  // dB mapping (-50 dB → 0, 0 dB → 1) spreads quiet→loud across the range.
+  const db = 20 * Math.log10(visual);
+  return Math.max(0, Math.min(1, (db + 50) / 50));
+}
+
 function renderMicLevel(value) {
   const level = normalizeLevel(value);
   state.audioSettings.inputLevel = level;
@@ -2632,13 +2665,26 @@ function renderMicLevel(value) {
   els.micLevelFill.style.transform = `scaleX(${level.toFixed(3)})`;
   els.micLevel.setAttribute('aria-valuenow', String(percent));
   els.micLevel.classList.toggle('is-hot', level >= 0.9);
-  const haloLevel = state.micState === MIC_STATES.LISTENING ? Math.sqrt(level) : 0;
+  // Baseline halo when listening (always-visible mic-ready indicator); audio
+  // level adds on top so any sound is reflected even at quiet levels.
+  const BASELINE_HALO = 0.4;
+  const haloLevel = state.micState === MIC_STATES.LISTENING
+    ? Math.min(1, BASELINE_HALO + (1 - BASELINE_HALO) * levelToHaloUnit(level))
+    : 0;
   const clipRisk = state.micState === MIC_STATES.LISTENING && level >= 0.95;
   const hot = level >= 0.85;
   els.micToggleButton.classList.toggle('is-clip-risk', clipRisk);
-  els.micToggleButton.style.setProperty('--mic-toggle-halo-color', clipRisk ? '185, 28, 28' : hot ? '245, 158, 11' : '59, 130, 246');
-  els.micToggleButton.style.setProperty('--mic-toggle-halo-alpha', (haloLevel ? 0.08 + haloLevel * (clipRisk ? 0.42 : hot ? 0.36 : 0.3) : 0).toFixed(3));
-  els.micToggleButton.style.setProperty('--mic-toggle-halo-size', `${Math.round(haloLevel * 14)}px`);
+  const r = clipRisk ? 185 : hot ? 245 : 59;
+  const g = clipRisk ? 28 : hot ? 158 : 130;
+  const b = clipRisk ? 28 : hot ? 11 : 246;
+  const alpha = haloLevel ? 0.08 + haloLevel * (clipRisk ? 0.42 : hot ? 0.36 : 0.3) : 0;
+  const scale = 1 + haloLevel * 0.55;
+  els.micToggleButton.style.setProperty('--mic-toggle-halo-scale', scale.toFixed(3));
+  els.micToggleButton.style.setProperty(
+    '--mic-toggle-halo-color',
+    haloLevel ? `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})` : 'transparent',
+  );
+  els.micToggleButton.style.boxShadow = '';
 }
 
 function renderLanguageControls() {
@@ -2717,6 +2763,82 @@ function closeLanguageSheet() {
     _skipLanguageSheetPopstate = true;
     history.back();
   }
+}
+
+function setupSheetSwipeClose({ layer, sheet, scrollContainer, onClose, isAllowed }) {
+  if (!layer || !sheet) return;
+  const SWIPE_CLOSE_THRESHOLD_PCT = 0.40;
+  let startY = null;
+  let startScrollTop = 0;
+  let dragging = false;
+  let currentDelta = 0;
+  let sheetHeight = 0;
+  const onStart = (e) => {
+    if (layer.hidden) return;
+    if (e.touches.length !== 1) return;
+    if (isAllowed && !isAllowed()) return;
+    startY = e.touches[0].clientY;
+    startScrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+    sheetHeight = sheet.getBoundingClientRect().height || 0;
+    dragging = false;
+    currentDelta = 0;
+  };
+  const onMove = (e) => {
+    if (startY === null) return;
+    const y = e.touches[0].clientY;
+    const delta = y - startY;
+    if (delta <= 0) return;
+    if (startScrollTop > 0) return;
+    if (scrollContainer && scrollContainer.scrollTop > 0) {
+      sheet.style.removeProperty('transform');
+      sheet.style.removeProperty('transition');
+      dragging = false;
+      return;
+    }
+    dragging = true;
+    currentDelta = delta;
+    // !important needed to beat the entry animation's fill-mode:both,
+    // which otherwise keeps "transform: translateY(0)" pinned.
+    sheet.style.setProperty('transition', 'none', 'important');
+    sheet.style.setProperty('transform', `translateY(${delta}px)`, 'important');
+    e.preventDefault();
+  };
+  const onEnd = () => {
+    if (dragging) {
+      const threshold = Math.max(40, sheetHeight * SWIPE_CLOSE_THRESHOLD_PCT);
+      if (currentDelta > threshold) {
+        // Animate the layer opacity together with the sheet so the scrim
+        // fades instead of popping when we hide it.
+        sheet.style.setProperty('transition', 'transform 0.18s ease', 'important');
+        sheet.style.setProperty('transform', 'translateY(100%)', 'important');
+        layer.style.setProperty('transition', 'opacity 0.18s ease', 'important');
+        layer.style.setProperty('opacity', '0', 'important');
+        setTimeout(() => {
+          onClose();
+          sheet.style.removeProperty('transform');
+          sheet.style.removeProperty('transition');
+          layer.style.removeProperty('opacity');
+          layer.style.removeProperty('transition');
+        }, 170);
+      } else {
+        sheet.style.setProperty('transition', 'transform 0.18s ease', 'important');
+        sheet.style.setProperty('transform', 'translateY(0)', 'important');
+        // Clear inline after the snap-back transition completes so the
+        // entry animation can take over again on next open.
+        setTimeout(() => {
+          sheet.style.removeProperty('transform');
+          sheet.style.removeProperty('transition');
+        }, 200);
+      }
+    }
+    startY = null;
+    dragging = false;
+    currentDelta = 0;
+  };
+  sheet.addEventListener('touchstart', onStart, { passive: true });
+  sheet.addEventListener('touchmove', onMove, { passive: false });
+  sheet.addEventListener('touchend', onEnd);
+  sheet.addEventListener('touchcancel', onEnd);
 }
 
 function _resetLanguageSheetPosition() {
@@ -2829,6 +2951,7 @@ function renderTurnStream(el, parts, role, fallbackText) {
     row.className = 'turn-part';
     if (part.speechState === 'spoken') row.classList.add('is-spoken');
     if (part.speechState === 'speaking') row.classList.add('is-speaking');
+    if (role === 'target' && part.lowQualityReference) row.classList.add('is-low-quality-ref');
     renderTextStream(row, committedText, previewText);
     if (role === 'target' && state.ttsSettings.enabled) {
       const replayText = String(committedText || '').trim();
@@ -2981,6 +3104,7 @@ function normalizeTurnPart(part) {
     targetCommittedText,
     targetPreviewText,
     targetText: String(part?.target_text || visibleText(targetCommittedText, targetPreviewText)),
+    lowQualityReference: Boolean(part?.low_quality_reference),
   };
 }
 

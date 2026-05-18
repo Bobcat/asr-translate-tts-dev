@@ -11,8 +11,8 @@ import {
   DEFAULT_TTS_OPTIONS,
 } from './shared/constants.js';
 import { cloneSettings } from './shared/utils.js';
-import { buildLocalLanes, createLocalTurn } from './shared/lanes.js';
-import { loadDevToolsSettings } from './shared/storage.js';
+import { buildLocalLanes, createLocalTurn } from './domain/lanes.js';
+import { loadDevToolsSettings } from './domain/storage.js';
 
 const initialLanes = buildLocalLanes('Dutch', 'English');
 

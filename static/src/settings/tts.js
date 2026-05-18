@@ -10,11 +10,11 @@ import {
   bcp47ForLanguageName,
   languageNameForBcp47,
   normalizeLanguageName,
-} from '../shared/languages.js';
+} from '../domain/languages.js';
 import { DEFAULT_TTS_SETTINGS, DEFAULT_TTS_OPTIONS } from '../shared/constants.js';
 import { cloneSettings, mergeSettings } from '../shared/utils.js';
-import { loadTtsGlobalConfig, persistTtsGlobalConfig } from '../shared/storage.js';
-import { currentLane } from '../shared/lanes.js';
+import { loadTtsGlobalConfig, persistTtsGlobalConfig } from '../domain/storage.js';
+import { currentLane } from '../domain/lanes.js';
 
 export const VOXCPM2_DEFAULT_LANGUAGE_CONFIG = {
   mode: 'reference_audio',

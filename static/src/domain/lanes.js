@@ -1,4 +1,4 @@
-import { LANE_IDS, TURN_STATES } from './constants.js';
+import { LANE_IDS, TURN_STATES } from '../shared/constants.js';
 import { state } from '../state.js';
 
 export function buildLocalLanes(sideALanguage, sideBLanguage) {

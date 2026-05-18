@@ -9,7 +9,7 @@ import {
   languages,
   bcp47ForLanguageName,
   languageNameForBcp47,
-} from '../shared/languages.js';
+} from '../domain/languages.js';
 import {
   voxcpm2GenderOptions,
   voxcpm2InstructionsPreview,
@@ -17,7 +17,7 @@ import {
   stableSampleInfo,
   ttsBackendOptions,
   renderTtsSettings,
-} from './settings.js';
+} from './tts.js';
 
 // audioQueue is owned by app.js (wired to lifecycle callbacks). Voice library
 // needs it for the stable-sample preview. Setter pattern avoids cyclic import.

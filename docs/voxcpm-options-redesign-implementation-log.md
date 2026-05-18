@@ -313,13 +313,7 @@ runtime path:
 - `_last_speech_quality_score(segments, wav_path)` implements the
   signal-level formula (`min(duration_s/3, vad_coverage_ratio,
   1 - max_internal_silence_ms/1000)`) using the existing ASR segments
-  plus the WAV file duration. `avg_logprob` is intentionally **not**
-  folded in: it measures whether the audio matches the transcription
-  (ASR confidence), not whether the audio is a usable *voice
-  reference* for TTS. The two diverge often enough (clean whisper →
-  high logprob but unusable ref; clear loud voice on a rare word →
-  low logprob but fine ref) that it's a poor proxy here. The
-  design-doc proposal to weave it in is dropped.
+  plus the WAV file duration.
 - Each lane keeps the most recent qualifying fragment as
   `lane.last_qualifying_asr_wav_path`. `_last_speech_reference_choice`
   returns `(path, low_quality)`:

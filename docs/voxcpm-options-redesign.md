@@ -335,8 +335,7 @@ reference-only mode per language.
 
 ## Last speech fragment — quality heuristic
 
-ASR confidence is not available across all backends (e.g. WhisperX), so the
-quality score relies on signal-level and timing features only.
+The quality score relies on signal-level and timing features.
 
 ```text
 quality_score = min(
@@ -354,35 +353,6 @@ back to the previous qualifying fragment, or shows "No usable sample yet".
 Among fragments that score ≥ 0.7, take the **most recent** one. Emotion can
 shift between turns; using the latest fragment keeps voice identity in sync
 with the current speaker state, rather than locking in a past mood.
-
-### ASR confidence (backend-conditional)
-
-Backend availability:
-
-- **Faster Whisper (direct)** — exposes `avg_logprob` per segment. This can be
-  mapped to a 0..1 confidence proxy with `exp(avg_logprob)`.
-- **WhisperX** — does not currently expose token-level confidence in our
-  pipeline. The signal-level formula above applies as-is.
-
-When `avg_logprob` is available, the formula extends to:
-
-```text
-asr_confidence = exp(avg_logprob)        // 0..1, only when available
-
-quality_score = min(
-  duration_s / 3.0,
-  vad_coverage_ratio,
-  1 - (max_internal_silence_ms / 1000),
-  asr_confidence,
-)
-```
-
-For Faster Whisper, the threshold of `0.7` applies to the combined score; for
-WhisperX, the three signal-level features carry the full weight of the score.
-
-Open item: verify the practical range of `exp(avg_logprob)` for realistic
-speech fragments and tune the threshold if needed. A naive map may compress
-the useful range too aggressively.
 
 ---
 

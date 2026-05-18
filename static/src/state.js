@@ -51,6 +51,7 @@ export const state = {
   ttsPromptInspectOpen: false,
   ttsUpdateBusy: false,
   voiceLibraryStable: {},
+  voiceLibraryPrompts: {},
   voiceLibraryBusyTag: '',
   voiceLibraryEngine: '',
   voiceLibraryLanguageTag: '',

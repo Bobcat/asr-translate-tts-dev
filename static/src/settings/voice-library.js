@@ -12,7 +12,6 @@ import {
 } from '../domain/languages.js';
 import {
   voxcpm2GenderOptions,
-  voxcpm2InstructionsPreview,
   currentTtsTargetLanguage,
   stableSampleInfo,
   ttsBackendOptions,
@@ -57,10 +56,7 @@ export function renderVoiceLibraryPage() {
     label: languageNameForBcp47(value) || value,
   }));
   const referenceText = String(langStatus.reference_text || '');
-  const languageName = languageNameForBcp47(tag) || tag || '';
-  const promptText = languageName
-    ? voxcpm2InstructionsPreview(languageName, { mode: 'description', gender, style: 'neutral' })
-    : '';
+  const promptText = String(state.voiceLibraryPrompts[gender] || '');
 
   const fragment = document.createDocumentFragment();
   fragment.append(
@@ -245,19 +241,24 @@ function playStableSamplePreview(tag, gender, info) {
 }
 
 export function applyVoiceLibraryStatus(stable) {
+  const envelope = stable && typeof stable === 'object' ? stable : {};
+  const languages = envelope.languages && typeof envelope.languages === 'object' ? envelope.languages : {};
+  const prompts = envelope.prompts && typeof envelope.prompts === 'object' ? envelope.prompts : {};
   const next = {};
-  if (stable && typeof stable === 'object') {
-    for (const [tag, entry] of Object.entries(stable)) {
-      next[String(tag).toLowerCase()] = entry && typeof entry === 'object'
-        ? {
-          has_reference_text: Boolean(entry.has_reference_text),
-          reference_text: String(entry.reference_text || ''),
-          samples: entry.samples && typeof entry.samples === 'object' ? entry.samples : {},
-        }
-        : { has_reference_text: false, reference_text: '', samples: {} };
-    }
+  for (const [tag, entry] of Object.entries(languages)) {
+    next[String(tag).toLowerCase()] = entry && typeof entry === 'object'
+      ? {
+        has_reference_text: Boolean(entry.has_reference_text),
+        reference_text: String(entry.reference_text || ''),
+        samples: entry.samples && typeof entry.samples === 'object' ? entry.samples : {},
+      }
+      : { has_reference_text: false, reference_text: '', samples: {} };
   }
   state.voiceLibraryStable = next;
+  state.voiceLibraryPrompts = {
+    female: String(prompts.female || ''),
+    male: String(prompts.male || ''),
+  };
 }
 
 async function handleGenerateStableSample(tag, gender, engine) {

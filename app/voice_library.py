@@ -8,14 +8,12 @@ from typing import Any
 from app.config import REPO_ROOT
 from app.tts_bridge import (
     LANGUAGE_BCP47_BY_NAME,
-    VOXCPM2_DEFAULT_LANGUAGE_CONFIG,
     _bcp47_tag_for_language_name,
     _decode_audio_payload,
     _is_voxcpm_family_backend,
     _post_json,
     _tts_pool_base_url,
     _tts_pool_timeout_s,
-    _voxcpm2_description_instructions,
 )
 
 
@@ -24,6 +22,14 @@ REFERENCE_TEXTS_ROOT = (REPO_ROOT / "config" / "voice_reference_texts").resolve(
 STABLE_VOICE_GENDERS = ("female", "male")
 _KNOWN_TAGS = frozenset(LANGUAGE_BCP47_BY_NAME.values())
 _KNOWN_GENDERS = frozenset(STABLE_VOICE_GENDERS)
+_STABLE_LIBRARY_PROMPTS = {
+    "female": "Adult female voice. Gentle and warm.",
+    "male": "Adult male voice. Gentle and calm.",
+}
+
+
+def stable_library_prompt(gender: str) -> str:
+    return _STABLE_LIBRARY_PROMPTS.get(str(gender or "").strip().lower(), "")
 
 
 def stable_voice_wav_path(language: str, gender: str) -> Path | None:
@@ -73,8 +79,11 @@ def stable_voice_language_status(language_tag: str) -> dict[str, Any]:
     }
 
 
-def stable_voice_library_status() -> dict[str, dict[str, Any]]:
-    return {tag: stable_voice_language_status(tag) for tag in sorted(_KNOWN_TAGS)}
+def stable_voice_library_status() -> dict[str, Any]:
+    return {
+        "prompts": dict(_STABLE_LIBRARY_PROMPTS),
+        "languages": {tag: stable_voice_language_status(tag) for tag in sorted(_KNOWN_TAGS)},
+    }
 
 
 def _language_name_for_tag(tag: str) -> str | None:
@@ -109,9 +118,7 @@ def generate_stable_sample(language_tag: str, gender: str, engine: str) -> dict[
     if not language_name:
         raise ValueError("unsupported_language_tag")
     text = _reference_text_for_tag(tag)
-    config = dict(VOXCPM2_DEFAULT_LANGUAGE_CONFIG)
-    config["gender"] = gender_key
-    instructions = _voxcpm2_description_instructions(language_name, config)
+    instructions = stable_library_prompt(gender_key)
     request_payload = {
         "model": engine_key,
         "input": text,
@@ -144,16 +151,3 @@ def generate_stable_sample(language_tag: str, gender: str, engine: str) -> dict[
         encoding="utf-8",
     )
     return _sample_entry(tag, gender_key)
-
-
-def stable_voice_prompt_preview(language_tag: str, gender: str) -> str:
-    tag = str(language_tag or "").strip().lower()
-    if tag not in _KNOWN_TAGS:
-        return ""
-    gender_key = str(gender or "").strip().lower()
-    if gender_key not in _KNOWN_GENDERS:
-        gender_key = "female"
-    language_name = _language_name_for_tag(tag) or tag
-    config = dict(VOXCPM2_DEFAULT_LANGUAGE_CONFIG)
-    config["gender"] = gender_key
-    return _voxcpm2_description_instructions(language_name, config)

@@ -170,6 +170,22 @@ LANGUAGE_BCP47_BY_NAME = {
     "Russian": "ru",
     "Swedish": "sv",
     "Vietnamese": "vi",
+    "Indonesian": "id",
+    "Bengali": "bn",
+    "Urdu": "ur",
+    "Persian": "fa",
+    "Thai": "th",
+    "Greek": "el",
+    "Czech": "cs",
+    "Finnish": "fi",
+    "Hebrew": "he",
+    "Tamil": "ta",
+    "Tagalog": "tl",
+    "Malay": "ms",
+    "Swahili": "sw",
+    "Bulgarian": "bg",
+    "Croatian": "hr",
+    "Slovak": "sk",
 }
 
 

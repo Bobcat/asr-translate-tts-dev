@@ -23,7 +23,7 @@ export function handleTargetTextClick(event) {
     return;
   }
   if (window.matchMedia?.('(pointer: coarse)').matches) {
-    const row = event.target?.closest?.('.turn-part.is-replayable');
+    const row = event.target?.closest?.('.turn-part.is-replayable, .turn-part.is-speakable');
     if (row && els.targetText.contains(row)) {
       const innerButton = row.querySelector('.bubble-speak-button');
       if (innerButton) handleBubbleAudioAction(innerButton, row);
@@ -44,7 +44,11 @@ function handleBubbleAudioAction(button, bubble) {
     return;
   }
   flashReplayBubble(bubble);
-  triggerReplayFromButton(button);
+  if (action === 'speak') {
+    triggerSpeakPartFromButton(button);
+  } else {
+    triggerReplayFromButton(button);
+  }
 }
 
 function flashReplayBubble(bubble) {
@@ -60,6 +64,14 @@ function triggerReplayFromButton(button) {
   if (state.sessionState !== SESSION_STATES.RUNNING) return;
   if (!state.ttsSettings.enabled) return;
   state.socket?.replayTts({ laneId, text });
+}
+
+function triggerSpeakPartFromButton(button) {
+  const partId = String(button.dataset.partId || '').trim();
+  if (!partId) return;
+  if (state.sessionState !== SESSION_STATES.RUNNING) return;
+  if (!state.ttsSettings.enabled) return;
+  state.socket?.speakPart(partId);
 }
 
 export function renderTranscript() {
@@ -101,10 +113,13 @@ function renderTurnStream(el, parts, role, fallbackText) {
       if (isStopForThis) {
         row.classList.add('is-replayable');
         row.classList.add('is-playing-audio');
-        row.append(createBubbleSpeakButton(replayText, state.currentTurn.laneId, 'stop'));
+        row.append(createBubbleSpeakButton({ text: replayText, laneId: state.currentTurn.laneId, partId: part.partId, mode: 'stop' }));
       } else if (part.speechState === 'spoken' && replayText) {
         row.classList.add('is-replayable');
-        row.append(createBubbleSpeakButton(replayText, state.currentTurn.laneId, 'replay'));
+        row.append(createBubbleSpeakButton({ text: replayText, laneId: state.currentTurn.laneId, partId: part.partId, mode: 'replay' }));
+      } else if (part.isClosed && part.speechState !== 'spoken' && replayText) {
+        row.classList.add('is-speakable');
+        row.append(createBubbleSpeakButton({ text: replayText, laneId: state.currentTurn.laneId, partId: part.partId, mode: 'speak' }));
       }
     }
     fragment.append(row);
@@ -124,12 +139,13 @@ function renderTurnStream(el, parts, role, fallbackText) {
   el.replaceChildren(fragment);
 }
 
-function createBubbleSpeakButton(text, laneId, mode = 'replay') {
+function createBubbleSpeakButton({ text, laneId, partId, mode = 'replay' }) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'bubble-speak-button';
   button.dataset.replayText = text;
   button.dataset.replayLane = laneId;
+  if (partId) button.dataset.partId = partId;
   if (mode === 'stop') {
     button.classList.add('is-stop');
     button.dataset.audioAction = 'stop';
@@ -140,7 +156,7 @@ function createBubbleSpeakButton(text, laneId, mode = 'replay') {
       + '<rect x="9" y="9" width="6" height="6" rx="1"/>'
       + '</svg>';
   } else {
-    button.dataset.audioAction = 'replay';
+    button.dataset.audioAction = mode === 'speak' ? 'speak' : 'replay';
     button.setAttribute('aria-label', 'Speak');
     button.title = 'Speak';
     button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'

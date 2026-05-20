@@ -158,7 +158,12 @@ class ConversationLane:
     tts_task: asyncio.Task[Any] | None = None
     last_target_committed: str = ""
     line_number: int = 0
-    pending_tts: dict[str, Any] | None = None
+    # In-flight TTS clips keyed by artifact_id. Each entry is awaiting
+    # frontend playback completion. Allowed to hold multiple entries at
+    # once so the turn-level Speak orchestrator can pipeline pool calls
+    # — the next bubble's synth can run while the previous bubble's WAV
+    # is still being played in the browser.
+    pending_tts: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_asr_segments: list[dict[str, Any]] = field(default_factory=list)
     last_asr_request_id: str = ""
     last_asr_backend: str = ""
@@ -312,6 +317,9 @@ class ConversationRuntime:
             return True
         if msg_type == "speak_now":
             await self._speak_now()
+            return True
+        if msg_type == "speak_part":
+            await self._speak_part(payload.get("part_id"))
             return True
         if msg_type == "translate_now":
             await self._translate_now()
@@ -600,6 +608,25 @@ class ConversationRuntime:
         await self._send_turn_update(reason="next_turn", previous_turn=previous_turn)
 
     async def _speak_now(self) -> None:
+        turn = self.current_turn
+        speaking_part_ids = [
+            part.part_id
+            for part in turn.parts
+            if part.speech_state != "spoken" and _part_target_text(part)
+        ]
+        await self._dispatch_speak_sequence(speaking_part_ids, reason="speak_now")
+
+    async def _speak_part(self, part_id: Any) -> None:
+        normalized = str(part_id or "").strip()
+        if not normalized:
+            return
+        turn = self.current_turn
+        target = next((p for p in turn.parts if p.part_id == normalized), None)
+        if target is None or target.speech_state == "spoken" or not _part_target_text(target):
+            return
+        await self._dispatch_speak_sequence([normalized], reason="speak_part")
+
+    async def _dispatch_speak_sequence(self, speaking_part_ids: list[str], *, reason: str) -> None:
         lane = self._current_lane()
         turn = self.current_turn
         if turn.state == TurnState.OPEN_SPEAKING or lane.tts_task is not None:
@@ -615,8 +642,7 @@ class ConversationRuntime:
                 )
             )
             return
-        text = _turn_speakable_target_text(turn)
-        if not text:
+        if not speaking_part_ids:
             await self._send(
                 event(
                     "tts_status",
@@ -642,23 +668,53 @@ class ConversationRuntime:
                 )
             )
             return
-        speaking_part_ids = [
-            part.part_id
-            for part in turn.parts
-            if part.speech_state != "spoken" and _part_target_text(part)
-        ]
-        if not speaking_part_ids:
-            return
+        selection = set(speaking_part_ids)
         self._close_asr_scope_for_turn(lane)
-        self._accept_visible_previews_for_parts(lane, part_ids=set(speaking_part_ids))
+        self._accept_visible_previews_for_parts(lane, part_ids=selection)
         for part in turn.parts:
-            if part.part_id in speaking_part_ids:
+            if part.part_id in selection:
                 part.speech_state = "speaking"
         self._refresh_turn_state()
-        await self._send_turn_update(reason="speak_now")
+        await self._send_turn_update(reason=reason)
         lane.tts_task = asyncio.create_task(
-            self._run_tts(lane.lane_id, turn.turn_id, text, speaking_part_ids)
+            self._run_speak_sequence(lane.lane_id, turn.turn_id, list(speaking_part_ids))
         )
+
+    async def _run_speak_sequence(
+        self,
+        lane_id: str,
+        turn_id: str,
+        part_ids: list[str],
+    ) -> None:
+        # Per-bubble TTS pipelined sequentially: dispatch one pool call,
+        # wait for the WAV (which emits tts_clip_ready to the browser),
+        # then dispatch the next. The browser's audio queue plays them in
+        # order; by the time clip N ends, clip N+1 has typically already
+        # arrived, so the audible gap is just the audio-element swap.
+        lane = self.lanes[lane_id]
+        current_task = asyncio.current_task()
+        try:
+            for part_id in part_ids:
+                if self.current_turn.turn_id != turn_id:
+                    return
+                target = next((p for p in self.current_turn.parts if p.part_id == part_id), None)
+                if target is None or target.speech_state == "spoken":
+                    continue
+                text = _part_target_text(target)
+                if not text:
+                    continue
+                sub_task = asyncio.create_task(
+                    self._run_tts(lane.lane_id, turn_id, text, [part_id])
+                )
+                try:
+                    await sub_task
+                except asyncio.CancelledError:
+                    if not sub_task.done():
+                        sub_task.cancel()
+                    raise
+        finally:
+            if lane.tts_task is current_task:
+                lane.tts_task = None
 
     async def _translate_now(self) -> None:
         lane = self._current_lane()
@@ -795,13 +851,15 @@ class ConversationRuntime:
 
         if self.current_turn.turn_id != turn_id or self.current_turn.state != TurnState.OPEN_SPEAKING:
             return
-        lane.pending_tts = {
-            "turn_id": turn_id,
-            "artifact_id": tts_payload.get("artifact_id"),
-            "text": text,
-            "part_ids": list(speaking_part_ids),
-            "tts": dict(tts_payload),
-        }
+        artifact_id = str(tts_payload.get("artifact_id") or "").strip()
+        if artifact_id:
+            lane.pending_tts[artifact_id] = {
+                "turn_id": turn_id,
+                "artifact_id": artifact_id,
+                "text": text,
+                "part_ids": list(speaking_part_ids),
+                "tts": dict(tts_payload),
+            }
         await self._send(
             event(
                 "tts_clip_ready",
@@ -819,20 +877,19 @@ class ConversationRuntime:
         lane = self.lanes.get(lane_id)
         if lane is None:
             return
-        pending = lane.pending_tts or {}
         if turn_id != self.current_turn.turn_id:
             return
-        if turn_id != str(pending.get("turn_id") or ""):
+        if not artifact_id:
             return
-        if artifact_id and artifact_id != str(pending.get("artifact_id") or ""):
+        pending = lane.pending_tts.pop(artifact_id, None)
+        if pending is None:
+            return
+        if turn_id != str(pending.get("turn_id") or ""):
             return
         part_ids = {str(part_id) for part_id in pending.get("part_ids", [])}
         for part in self.current_turn.parts:
             if part.part_id in part_ids and part.speech_state == "speaking":
                 part.speech_state = "spoken"
-        lane.pending_tts = None
-        await _cancel_task(lane.translation_task)
-        self._reset_lane_text_scope(lane)
         self._refresh_turn_state()
         await self._send_turn_update(reason="tts_playback_complete")
 
@@ -1036,7 +1093,7 @@ class ConversationRuntime:
         await _cancel_task(lane.tts_task)
         lane.translation_task = None
         lane.tts_task = None
-        lane.pending_tts = None
+        lane.pending_tts.clear()
         for part in turn.parts:
             self._discard_part_reference_wav(part)
         turn.state = TurnState.CLOSED
@@ -1103,12 +1160,16 @@ class ConversationRuntime:
         return (TTS_ROOT / session_token / "refs" / f"{part_token}.wav").resolve()
 
     def _reset_lane_text_scope(self, lane: ConversationLane) -> None:
+        # NB: deliberately does NOT touch lane.pending_tts. TTS lifecycle
+        # (synthesis in-flight, awaiting playback complete) is orthogonal
+        # to the lane's ASR/translation text state, which is what this
+        # helper resets. The bubble-close path uses this between bubbles
+        # while earlier-bubble TTS may still be playing.
         lane.source_state = SourceTranscriptState()
         lane.translation_runner = self._build_translation_runner()
         lane.translation_generation += 1
         lane.last_target_committed = ""
         lane.line_number = 0
-        lane.pending_tts = None
 
     def _current_writable_part(self) -> TurnPart:
         turn = self.current_turn
@@ -1262,7 +1323,7 @@ class ConversationRuntime:
             await _cancel_task(lane.tts_task)
             lane.translation_task = None
             lane.tts_task = None
-            lane.pending_tts = None
+            lane.pending_tts.clear()
 
     async def _cleanup(self) -> None:
         self.closed = True

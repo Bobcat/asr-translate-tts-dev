@@ -614,7 +614,8 @@ button {
   opacity: 1;
 }
 
-.target-pane .turn-part.is-replayable {
+.target-pane .turn-part.is-replayable,
+.target-pane .turn-part.is-speakable {
   position: relative;
   padding-right: 40px;
   padding-bottom: 20px;

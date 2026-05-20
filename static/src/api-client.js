@@ -118,6 +118,14 @@ export class SessionSocket {
     return true;
   }
 
+  speakPart(partId) {
+    if (!this.isOpen()) return false;
+    const id = String(partId || '').trim();
+    if (!id) return false;
+    this.ws.send(JSON.stringify({ type: 'speak_part', part_id: id }));
+    return true;
+  }
+
   translateNow() {
     if (!this.isOpen()) return false;
     this.ws.send(JSON.stringify({ type: 'translate_now' }));

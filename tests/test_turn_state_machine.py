@@ -292,7 +292,7 @@ class TurnStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.current_turn.state.value, "open_empty")
         self.assertEqual(runtime.current_turn.parts, [])
         self.assertEqual(len(runtime.closed_turns), 1)
-        self.assertIsNone(runtime.lanes["a_to_b"].pending_tts)
+        self.assertFalse(runtime.lanes["a_to_b"].pending_tts)
         self.assertFalse(any(event["type"] == "tts_clip_ready" for event in websocket.sent))
 
     async def test_finish_closes_without_forced_asr_or_translation_drain(self) -> None:

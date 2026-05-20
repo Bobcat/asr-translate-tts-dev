@@ -50,6 +50,7 @@ function normalizeTurnPart(part) {
     targetPreviewText,
     targetText: String(part?.target_text || visibleText(targetCommittedText, targetPreviewText)),
     lowQualityReference: Boolean(part?.low_quality_reference),
+    isClosed: Boolean(part?.is_closed),
   };
 }
 

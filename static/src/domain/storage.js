@@ -5,6 +5,7 @@
 export const TTS_GLOBAL_STORAGE_KEY = 'tts_global';
 export const RECENT_LANGUAGES_KEY = 'recent_languages';
 export const DEV_TOOLS_SETTINGS_KEY = 'dev_tools_settings';
+export const SETUP_LANGUAGES_KEY = 'setup_languages';
 export const RECENT_MAX = 4;
 
 export function loadTtsGlobalConfig() {
@@ -96,4 +97,30 @@ export function pushRecentLanguage(name) {
   const recent = getRecentLanguages().filter((n) => n !== name);
   recent.unshift(name);
   localStorage.setItem(RECENT_LANGUAGES_KEY, JSON.stringify(recent.slice(0, RECENT_MAX)));
+}
+
+export function loadSetupLanguages() {
+  try {
+    const raw = localStorage.getItem(SETUP_LANGUAGES_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const source = typeof parsed.source === 'string' ? parsed.source : '';
+    const target = typeof parsed.target === 'string' ? parsed.target : '';
+    if (!source || !target) return null;
+    return { source, target };
+  } catch (_) {
+    return null;
+  }
+}
+
+export function persistSetupLanguages(source, target) {
+  try {
+    localStorage.setItem(SETUP_LANGUAGES_KEY, JSON.stringify({
+      source: String(source || ''),
+      target: String(target || ''),
+    }));
+  } catch (_) {
+    // ignore quota / disabled storage
+  }
 }

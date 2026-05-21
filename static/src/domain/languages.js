@@ -113,3 +113,35 @@ export function flagForLanguage(name) {
   const match = languages.find((item) => item.name === name);
   return match?.flag || LANGUAGE_FLAGS[match?.asr] || '';
 }
+
+export function guessSetupLanguages() {
+  // Best-effort source/target pair from navigator.languages (browser
+  // preference list). Falls back to English source / Dutch target when
+  // the browser only knows English variants.
+  const prefs = Array.isArray(navigator.languages) && navigator.languages.length
+    ? navigator.languages
+    : (navigator.language ? [navigator.language] : []);
+  const matchName = (tag) => {
+    const lower = String(tag || '').toLowerCase().trim();
+    if (!lower) return null;
+    const exact = languages.find((item) => item.bcp47 === lower);
+    if (exact) return exact.name;
+    const primary = lower.split('-')[0];
+    const byPrimary = languages.find((item) => item.bcp47 === primary);
+    if (byPrimary) return byPrimary.name;
+    const byPrefix = languages.find((item) => item.bcp47.split('-')[0] === primary);
+    return byPrefix ? byPrefix.name : null;
+  };
+  let source = null;
+  for (const pref of prefs) {
+    const name = matchName(pref);
+    if (name) { source = name; break; }
+  }
+  if (!source) source = 'English';
+  // Target is fixed to a TTS-safe pair: English by default, Chinese when
+  // the source is already an English variant. Browser preferences are
+  // intentionally not consulted here — the goal is guaranteed TTS quality.
+  const sourceIsEnglishFamily = source === 'English' || source === 'British English';
+  const target = sourceIsEnglishFamily ? 'Chinese' : 'English';
+  return { source, target };
+}

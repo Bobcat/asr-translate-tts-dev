@@ -14,6 +14,7 @@ import {
   currentLaneId,
 } from '../domain/lanes.js';
 import { normalizeLanguageName } from '../domain/languages.js';
+import { persistSetupLanguages } from '../domain/storage.js';
 import { renderLanguageControls } from '../ui/render-status.js';
 import { updateActionButtons } from '../ui/action-buttons.js';
 import { renderTtsSettings } from '../settings/tts.js';
@@ -87,6 +88,7 @@ export function setVisibleLanguage(role, value) {
   }
   state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
   state.currentTurn = createLocalTurn(currentLaneId(), state.lanes);
+  persistSetupLanguages(state.sideALanguage, state.sideBLanguage);
   renderLanguageControls();
   renderTranscript();
   renderTtsSettings();
@@ -100,6 +102,7 @@ export function swapSetupLanguages() {
   state.sideBLanguage = previousSideA;
   state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
   state.currentTurn = createLocalTurn(currentLaneId(), state.lanes);
+  persistSetupLanguages(state.sideALanguage, state.sideBLanguage);
   renderLanguageControls();
   renderTranscript();
   renderTtsSettings();

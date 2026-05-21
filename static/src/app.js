@@ -3,7 +3,8 @@
 // dedicated modules under session/, settings/, ui/, domain/, shared/.
 
 import { api } from './api-client.js';
-import { normalizeLanguageName } from './domain/languages.js';
+import { guessSetupLanguages, normalizeLanguageName } from './domain/languages.js';
+import { loadSetupLanguages } from './domain/storage.js';
 import { buildLocalLanes } from './domain/lanes.js';
 import { mergeSettings } from './shared/utils.js';
 import { DEFAULT_TUNING_SETTINGS } from './shared/constants.js';
@@ -95,8 +96,9 @@ init().catch(() => {
 
 async function init() {
   const config = await api.getConfig();
-  state.sideALanguage = normalizeLanguageName(config.conversation?.side_a_language || 'Dutch');
-  state.sideBLanguage = normalizeLanguageName(config.conversation?.side_b_language || 'English');
+  const setupLanguages = loadSetupLanguages() || guessSetupLanguages();
+  state.sideALanguage = normalizeLanguageName(setupLanguages.source);
+  state.sideBLanguage = normalizeLanguageName(setupLanguages.target);
   state.lanes = buildLocalLanes(state.sideALanguage, state.sideBLanguage);
   state.audioInputSampleRate = config.audio_input?.sample_rate_hz || 16000;
   state.tuningSettings = mergeSettings(DEFAULT_TUNING_SETTINGS, config.live_settings || {});
